@@ -123,7 +123,7 @@ from .cmor_constants import (
     STATIC_FREQ,
 )
 from .cmor_helpers import (cmip7_brands, component_input_path, find_ps_companion, get_json_file_data,
-                           get_vertical_dimension, iso_to_bronx_chunk, resolve_input_file_brand,
+                           get_vertical_dimension,  resolve_input_file_brand,
                            resolve_named_ps_source, is_static_component)
 from .cmor_reduce import parse_varlist_value
 from .cmor_finder import mip_entry_frequency
@@ -672,7 +672,7 @@ def _input_vertical_token(nc_path: str, local_var: str,
             vert_dim = get_vertical_dimension(dataset, local_var)
             if vert_dim == 0:
                 return _scalar_vertical_token(dataset, local_var, mip_vert_tokens) or 0
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
         fre_logger.debug('could not inspect %s in %s for vertical dim', local_var, nc_path,
                          exc_info=True)
         return _INSPECTION_ERROR
@@ -791,7 +791,7 @@ def _input_attrs(nc_path: str, local_var: str) -> Union[dict, object]:
                 'units': getattr(variable, 'units', None),
                 'cell_methods': getattr(variable, 'cell_methods', None),
             }
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
         fre_logger.debug('could not inspect %s in %s for units/cell_methods', local_var,
                          nc_path, exc_info=True)
         return _INSPECTION_ERROR
@@ -908,7 +908,7 @@ def _range_finding(bounds: dict, files: list, dmls_bin: Optional[str] = None,
     try:
         with Dataset(str(representative), 'r') as dataset:
             data = dataset.variables[local_var][...]
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
         fre_logger.debug('could not read %s in %s for range check', local_var, representative,
                          exc_info=True)
         return {
@@ -931,15 +931,15 @@ def _range_finding(bounds: dict, files: list, dmls_bin: Optional[str] = None,
 
     problems = []
     if bounds['valid_min'] is not None and actual_min < bounds['valid_min']:
-        problems.append(f'min {actual_min:g} < valid_min {bounds["valid_min"]:g}')
+        problems.append(f"min {actual_min:g} < valid_min {bounds['valid_min']:g}")
     if bounds['valid_max'] is not None and actual_max > bounds['valid_max']:
-        problems.append(f'max {actual_max:g} > valid_max {bounds["valid_max"]:g}')
+        problems.append(f"max {actual_max:g} > valid_max {bounds['valid_max']:g}")
     if bounds['ok_min_mean_abs'] is not None and actual_mean_abs < bounds['ok_min_mean_abs']:
         problems.append(
-            f'mean_abs {actual_mean_abs:g} < ok_min_mean_abs {bounds["ok_min_mean_abs"]:g}')
+            f"mean_abs {actual_mean_abs:g} < ok_min_mean_abs {bounds['ok_min_mean_abs']:g}")
     if bounds['ok_max_mean_abs'] is not None and actual_mean_abs > bounds['ok_max_mean_abs']:
         problems.append(
-            f'mean_abs {actual_mean_abs:g} > ok_max_mean_abs {bounds["ok_max_mean_abs"]:g}')
+            f"mean_abs {actual_mean_abs:g} > ok_max_mean_abs {bounds['ok_max_mean_abs']:g}")
 
     return {
         'status': 'out_of_range' if problems else 'ok',
@@ -952,7 +952,7 @@ def _range_finding(bounds: dict, files: list, dmls_bin: Optional[str] = None,
     }
 
 
-def _build_files_report(table_path: str, table_data: Optional[dict], mip_era: str,
+def _build_files_report(table_data: Optional[dict], mip_era: str,
                         table_target: dict, pp_dir: str, one_to_one_mapped: dict,
                         check_staging: bool, check_dims: bool, check_output: bool = False,
                         check_attrs: bool = False, check_range: bool = False,
@@ -1035,7 +1035,7 @@ def _build_files_report(table_path: str, table_data: Optional[dict], mip_era: st
     return files_report
 
 
-def _input_dir_brand(input_dir: Optional[Path], gfdl_key: str, var: str, table_data: dict, # pylint: disable=too-many-arguments, too-many-positional-arguments
+def _input_dir_brand(input_dir: Optional[Path], gfdl_key: str, var: str, table_data: dict,
                      reduce: Optional[str], start: Optional[int], stop: Optional[int],
                      dmls_bin: Optional[str]) -> Optional[str]:
     """The CMIP7 brand `gfdl_key`'s files in `input_dir` would be CMORized to as `var`, read
@@ -1046,13 +1046,13 @@ def _input_dir_brand(input_dir: Optional[Path], gfdl_key: str, var: str, table_d
         return None
     try:
         return resolve_input_file_brand(files[0], gfdl_key, var, table_data, reduce)
-    except Exception as exc:  # pylint: disable=broad-except
+    except Exception as exc:
         fre_logger.debug('could not resolve the CMIP7 brand of %s in %s: %s',
                          gfdl_key, files[0], exc)
         return None
 
 
-def _source_brand(table_data: dict, var: str, source: tuple, reduce: Optional[str], # pylint: disable=too-many-arguments, too-many-positional-arguments, too-many-locals
+def _source_brand(table_data: dict, var: str, source: tuple, reduce: Optional[str],
                   pp_dir: str, table_target: dict, start: Optional[int], stop: Optional[int],
                   dmls_bin: Optional[str], brand_cache: dict) -> Optional[str]:
     """The CMIP7 brand of `var` that `source` -- a (component, GFDL diagnostic key) pair --
@@ -1075,7 +1075,7 @@ def _source_brand(table_data: dict, var: str, source: tuple, reduce: Optional[st
     return brand_cache[cache_key]
 
 
-def _split_multi_brand(multiply_mapped: dict, table_data: dict, reduce_by_source: dict, # pylint: disable=too-many-arguments, too-many-positional-arguments
+def _split_multi_brand(multiply_mapped: dict, table_data: dict, reduce_by_source: dict,
                        pp_dir: str, table_target: dict, start: Optional[int],
                        stop: Optional[int], dmls_bin: Optional[str], brand_cache: dict) -> tuple:
     """Move each CMIP7 variable in `multiply_mapped` whose sources all resolve to different
@@ -1188,7 +1188,7 @@ def _build_table_report(table_path: str, mip_era: str, varlists_by_table: dict,
         needs_table_data = check_dims or check_output or check_attrs or check_range
         table_data = get_json_file_data(table_path) if needs_table_data else None
         report_entry['files'] = _build_files_report(
-            table_path, table_data, mip_era, table_target, pp_dir, one_to_one_mapped,
+            table_data, mip_era, table_target, pp_dir, one_to_one_mapped,
             check_staging, check_dims, check_output, check_attrs, check_range,
             output_files_index, dmls_bin, start, stop, ps_fallback, grid_check,
             multi_brand_mapped=multi_brand_mapped
@@ -1212,14 +1212,14 @@ def _staging_findings(var_entry: dict) -> list:
         return []
 
     color = 'red' if staging['status'] in ('unstaged', 'missing') else 'yellow'
-    findings = [(color, f'staging={staging["status"]}')]
+    findings = [(color, f"staging={staging['status']}")]
     if staging['unstaged_files']:
         findings[0] = (
             color,
-            f'staging={staging["status"]} ({len(staging["unstaged_files"])} file(s) not yet staged)',
+            f"staging={staging['status']} ({len(staging['unstaged_files'])} file(s) not yet staged)",
         )
     if staging['gaps']:
-        findings.append((color, f'date-range gaps: {", ".join(staging["gaps"])}'))
+        findings.append((color, f"date-range gaps: {', '.join(staging['gaps'])}"))
     return findings
 
 
@@ -1230,21 +1230,21 @@ def _dims_findings(var_entry: dict) -> list:
         return []
 
     color = 'red' if dims['status'] not in ('ok', 'unknown') else 'yellow'
-    findings = [(color, f'dims={dims["status"]}')]
+    findings = [(color, f"dims={dims['status']}")]
     if dims['status'] not in ('ok', 'unknown'):
         findings[0] = (
             color,
-            (f'dims={dims["status"]} (table wants {dims.get("mip_table_vertical_dims")}, '
-             f'input has {dims.get("input_vertical_dim")})'),
+            (f"dims={dims['status']} (table wants {dims.get('mip_table_vertical_dims')}, "
+             f"input has {dims.get('input_vertical_dim')})"),
         )
     if dims.get('missing_ps_file'):
         locations = []
         if dims.get('missing_mapped_ps_in'):
-            locations.append(f'{dims["missing_mapped_ps_in"]} (mapped ps)')
+            locations.append(f"{dims['missing_mapped_ps_in']} (mapped ps)")
         locations.append(dims['missing_ps_file'])
         if dims.get('missing_ps_component_in'):
-            locations.append(f'{dims["missing_ps_component_in"]} (ps_component)')
-        findings.append((color, f'missing companion ps file: {" or ".join(locations)}'))
+            locations.append(f"{dims['missing_ps_component_in']} (ps_component)")
+        findings.append((color, f"missing companion ps file: {' or '.join(locations)}"))
     return findings
 
 
@@ -1254,9 +1254,9 @@ def _grid_findings(var_entry: dict) -> list:
     if grid is None:
         return []
     if grid['status'] == 'mismatch':
-        return [('red', f'grid={grid["grid_label"]} mismatch: ' + '; '.join(grid['problems']))]
+        return [('red', f"grid={grid['grid_label']} mismatch: " + '; '.join(grid['problems']))]
     if grid['status'] == 'unknown':
-        return [('yellow', f'grid=unknown ({grid.get("reason")})')]
+        return [('yellow', f"grid=unknown ({grid.get('reason')})")]
     return []
 
 
@@ -1266,12 +1266,12 @@ def _output_findings(var_entry: dict) -> list:
     if output is None:
         return []
     if output['status'] == 'produced' and not output['gaps']:
-        return [('green', f'output=produced ({output["file_count"]} file(s))')]
+        return [('green', f"output=produced ({output['file_count']} file(s))")]
 
     color = 'red' if output['status'] == 'missing' else 'yellow'
-    findings = [(color, f'output={output["status"]}')]
+    findings = [(color, f"output={output['status']}")]
     if output['gaps']:
-        findings.append((color, f'date-range gaps: {", ".join(output["gaps"])}'))
+        findings.append((color, f"date-range gaps: {', '.join(output['gaps'])}"))
     return findings
 
 
@@ -1281,7 +1281,7 @@ def _attrs_findings(var_entry: dict) -> list:
     if attrs is None or attrs['status'] == 'ok':
         return []
     if attrs['status'] == 'unknown':
-        return [('yellow', f'attrs=unknown ({attrs.get("reason")})')]
+        return [('yellow', f"attrs=unknown ({attrs.get('reason')})")]
 
     findings = []
     for field_name in ('units', 'cell_methods'):
@@ -1289,8 +1289,8 @@ def _attrs_findings(var_entry: dict) -> list:
         if field['status'] != 'ok':
             color = 'red' if field['status'] == 'mismatch' else 'yellow'
             findings.append((color, (
-                f'{field_name}={field["status"]} '
-                f'(table wants {field["mip_table"]}, input has {field["input"]!r})'
+                f"{field_name}={field['status']} "
+                f"(table wants {field['mip_table']}, input has {field['input']!r})"
             )))
     return findings
 
@@ -1303,8 +1303,8 @@ def _range_findings(var_entry: dict) -> list:
     if range_['status'] == 'out_of_range':
         return [('red', 'range=out_of_range: ' + '; '.join(range_['problems']))]
     if range_['status'] == 'skipped_offline':
-        return [('yellow', f'range=skipped_offline ({range_.get("reason")})')]
-    return [('yellow', f'range=unknown ({range_.get("reason")})')]
+        return [('yellow', f"range=skipped_offline ({range_.get('reason')})")]
+    return [('yellow', f"range=unknown ({range_.get('reason')})")]
 
 
 def _file_findings(var_entry: dict) -> list:
@@ -1326,13 +1326,13 @@ def _print_exp_config_report(exp_report: dict) -> None:
     color = {'ok': 'green', 'warning': 'yellow', 'error': 'red'}[exp_report['status']]
     click.echo()
     click.echo(click.style('[EXPERIMENT CONFIG]', bold=True, fg='cyan') +
-               click.style(f'  {exp_report["file"]}', dim=True))
+               click.style(f"  {exp_report['file']}", dim=True))
     if exp_report.get('cv'):
-        click.echo(click.style(f'  checked against {exp_report["cv"]}', dim=True))
-    click.echo('  ' + click.style(f'status={exp_report["status"]}', fg=color))
+        click.echo(click.style(f"  checked against {exp_report['cv']}", dim=True))
+    click.echo('  ' + click.style(f"status={exp_report['status']}", fg=color))
     for finding in exp_report['findings']:
         finding_color = 'red' if finding['level'] == 'error' else 'yellow'
-        click.echo('    ' + click.style(f'{finding["level"].upper()} {finding["attribute"]}: ',
+        click.echo('    ' + click.style(f"{finding['level'].upper()} {finding['attribute']}: ",
                                         fg=finding_color, bold=True) + finding['message'])
 
 
@@ -1360,7 +1360,7 @@ def _print_coverage_summary(files: dict) -> Optional[tuple]:
     note = f'{common_span[0]}-{common_span[1]} for {common_count}/{total} variables'
     if requested != [None, None]:
         bounds = ('-' if year is None else f'{year:04d}' for year in requested)
-        note += f'; run bounds {"..".join(bounds)}'
+        note += f"; run bounds {'..'.join(bounds)}"
     if outliers:
         note += f'; {outliers} incomplete or different'
     color = 'green' if outliers == 0 else 'yellow'
@@ -1379,14 +1379,15 @@ def _coverage_finding(coverage: Optional[dict], common_span: Optional[tuple]) ->
     span = (coverage['first_date'], coverage['last_date'])
     if coverage['status'] == 'complete' and span == common_span:
         return None
-    text = f'coverage={coverage["status"]} {span[0]}-{span[1]} ({coverage["years_covered"]} yr)'
+    text = f"coverage={coverage['status']} {span[0]}-{span[1]} ({coverage['years_covered']} yr)"
     if coverage['missing_years']:
-        text += f', missing years: {", ".join(coverage["missing_years"])}'
+        text += f", missing years: {', '.join(coverage['missing_years'])}"
     return text
 
 
 def _print_report(report: dict, show_mapped: bool = False,
                   show_unmapped: bool = False, show_multi_mapped: bool = False) -> None:
+    """this function uses click.echo by design"""
     if EXP_CONFIG_REPORT_KEY in report:
         _print_exp_config_report(report[EXP_CONFIG_REPORT_KEY])
     table_names = sorted(name for name in report if name != EXP_CONFIG_REPORT_KEY)
@@ -1395,7 +1396,7 @@ def _print_report(report: dict, show_mapped: bool = False,
         if table_index:
             click.echo()
         click.echo(click.style(f'[{table_name}]', bold=True, fg='cyan') +
-                   click.style(f'  {entry["reference_var_count"]} variables required by table',
+                   click.style(f"  {entry['reference_var_count']} variables required by table",
                                dim=True))
 
         unmapped = entry['unmapped']
@@ -1419,7 +1420,7 @@ def _print_report(report: dict, show_mapped: bool = False,
                 for var in sorted(multiply_mapped):
                     brands = multiply_mapped_brands.get(var)
                     locs = ', '.join(
-                        f'{comp}:{key}' + (f' ({brands[i] or "brand unresolved"})' if brands else '')
+                        f"{comp}:{key}" + (f" ({brands[i] or 'brand unresolved'})" if brands else '')
                         for i, (comp, key) in enumerate(multiply_mapped[var]))
                     click.echo(f'      - {var}: {locs}')
             else:
@@ -1456,7 +1457,7 @@ def _print_report(report: dict, show_mapped: bool = False,
                 'varlist values that are neither a name nor a {name, reduce} object',
                 nonzero_fg='red'))
             for invalid in invalid_entries:
-                click.echo(f'      - {invalid["component"]}:{invalid["local_key"]}: {invalid["error"]}')
+                click.echo(f"      - {invalid['component']}:{invalid['local_key']}: {invalid['error']}")
 
         if show_mapped:
             one_to_one = entry.get('one_to_one_mapped', {})
@@ -1603,7 +1604,7 @@ def cmor_check_subtool(
     :rtype: dict
     """
     started_at = time.monotonic()
-    click.echo('fremor check: loading configuration...', err=True)
+    fre_logger.info('loading configuration: %s', yamlfile)
     cmor_yaml_ctx = _load_config_yaml(yamlfile)
     mip_era = cmor_yaml_ctx['mip_era']
     pp_dir = cmor_yaml_ctx['pp_dir']
@@ -1615,8 +1616,8 @@ def cmor_check_subtool(
 
     if check_output and not outdir:
         raise ValueError(
-            f"--check-outputs requested but {yamlfile} has no directories.outdir set; "
-            "nothing to check produced output against.")
+            f'--check-outputs requested but {yamlfile} has no directories.outdir set; '
+            'nothing to check produced output against.')
 
     all_table_names = sorted({table_target['table_name'] for table_target in table_targets})
     if not all_table_names:
@@ -1638,48 +1639,43 @@ def cmor_check_subtool(
     disabled_count = len(requested_table_names) - len(table_names)
     if disabled_count:
         click.echo(
-            f'fremor check: skipping {disabled_count} disabled MIP table(s)',
+            f'skipping {disabled_count} disabled MIP table(s)',
             err=True,
         )
     varlist_count = sum(
         len(table_target.get('target_components') or [])
         for table_target in selected_table_targets
     )
-    click.echo(
-        f'fremor check: loading {varlist_count} variable list(s) for '
-        f'{len(table_names)} MIP table(s)...',
-        err=True,
+    fre_logger.info(
+        'loading %s variable list(s) for %s MIP table(s)...',
+        varlist_count, len(table_names),
     )
     if check_staging:
-        click.echo(
-            'fremor check: staging checks query archive metadata for each mapped variable; '
+        fre_logger.warning(
+            'staging checks query archive metadata for each mapped variable; '
             'dmls and network filesystems may respond slowly...',
-            err=True,
         )
     if check_dims:
-        click.echo(
-            'fremor check: dimension checks open one NetCDF header per mapped variable...',
-            err=True,
+        fre_logger.info(
+            'dimension checks open one NetCDF header per mapped variable...',
         )
     if check_attrs:
-        click.echo(
-            'fremor check: attrs checks open one NetCDF header per mapped variable...',
-            err=True,
+        fre_logger.info(
+            'attrs checks open one NetCDF header per mapped variable...',
         )
     if check_range:
-        click.echo(
-            'fremor check: range checks read a full file\'s data values per mapped variable '
+        fre_logger.info(
+            'range checks read a full file\'s data values per mapped variable '
             'and can be VERY SLOW for large/high-frequency fields; files still offline '
             '(not staged) are skipped rather than triggering a tape retrieval...',
-            err=True,
         )
     output_files_index = []
     if check_output:
-        click.echo(f'fremor check: indexing existing output under {outdir}...', err=True)
+        fre_logger.info('indexing existing output under %s...', outdir)
         output_files_index = _index_output_files(outdir)
-        click.echo(
-            f'fremor check: found {len(output_files_index)} existing output file(s) under {outdir}',
-            err=True,
+        fre_logger.info(
+            'found %s existing output file(s) under %s',
+            len(output_files_index), outdir,
         )
     report = {}
     exp_json = cmor_yaml_ctx.get('exp_json')
@@ -1695,7 +1691,7 @@ def cmor_check_subtool(
         exp_config_data = {}
         try:
             exp_config_data = get_json_file_data(exp_json) if exp_json else {}
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             fre_logger.warning('could not read exp_json %s for the grid-label check', exp_json)
         exp_grid_label = exp_config_data.get('grid_label')
         grid_cv, _cv_path = load_cv(mip_tables_dir, exp_config_data, mip_era)
@@ -1723,11 +1719,10 @@ def cmor_check_subtool(
                 enabled_checks.append('attrs')
             if check_range:
                 enabled_checks.append('range')
-            check_detail += f' and {"/".join(enabled_checks)} input-file checks'
-        click.echo(
-            f'fremor check: checking table {index}/{len(table_names)} '
-            f'({table_name}): {check_detail}...',
-            err=True,
+            check_detail += f" and {'/'.join(enabled_checks)} input-file checks"
+        fre_logger.info(
+            'checking table %s/%s (%s): %s...',
+            index, len(table_names), table_name, check_detail,
         )
         table_started_at = time.monotonic()
         table_target = table_targets_by_name.get(table_name)
@@ -1751,14 +1746,13 @@ def cmor_check_subtool(
             grid_check=grid_check
         )
         report[table_entry.pop('table_name')] = table_entry
-        click.echo(
-            f'fremor check: finished {table_name} in '
-            f'{time.monotonic() - table_started_at:.1f}s',
-            err=True,
+        fre_logger.info(
+            'finished %s in %.1fs',
+            table_name, time.monotonic() - table_started_at,
         )
 
     if json_output:
-        click.echo(json.dumps(report, indent=2))
+        click.echo(json.dumps(report, indent=2)) # leave this as click.echo
     else:
         _print_report(report, show_mapped=show_mapped,
                      show_unmapped=show_unmapped, show_multi_mapped=show_multi_mapped)
@@ -1768,5 +1762,5 @@ def cmor_check_subtool(
             json.dump(report, handle, indent=2)
         fre_logger.info('wrote check report to %s', output_report)
 
-    click.echo(f'fremor check: complete in {time.monotonic() - started_at:.1f}s', err=True)
+    fre_logger.info('complete in %.1fs', time.monotonic() - started_at)
     return report

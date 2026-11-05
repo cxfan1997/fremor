@@ -35,12 +35,13 @@ Functions
 - ``get_vertical_dimension(ds, target_var)``
 - ``create_tmp_dir(outdir, json_exp_config)``
 - ``get_json_file_data(json_file_path)``
-- ``update_grid_and_label(json_file_path, new_grid_label, new_grid, new_nom_res, output_file_path)``
-- ``update_calendar_type(json_file_path, new_calendar_type, output_file_path)``
+- ``exp_config_overrides(grid_label, grid, nom_res, calendar_type)``
+- ``warn_overridden_exp_config(exp_config_data, overrides, json_exp_config)``
 - ``check_path_existence(some_path)``
 - ``resolve_mip_era_table_resource(json_table_config, mip_era, resource)``
 - ``iso_to_bronx_chunk(cmor_chunk_in)``
 - ``conv_mip_to_bronx_freq(cmor_table_freq)``
+- ``conv_bronx_to_cmip7_freq(bronx_freq)``
 - ``get_bronx_freq_from_mip_table(json_table_config)``
 - ``filter_brands(brands, target_var, mip_var_cfgs, has_time_bnds, input_vert_dim)``
 - ``scalar_z_coords(ds, local_var)``
@@ -114,9 +115,7 @@ def calendars_are_equivalent(cal1: Optional[str], cal2: Optional[str]) -> bool:
     return normalize_calendar(cal1) == normalize_calendar(cal2)
 
 def get_time_calendar_ds(ds = None):
-    """
-    
-    """
+    """Return the normalized calendar attached to a dataset's time coordinate."""
     try:
         return get_time_calendar_value(ds['time'])
     except KeyError as exc:
@@ -135,13 +134,13 @@ def get_time_calendar_value(time_var) -> Optional[str]:
     calendar_val = None
     try:
         calendar_val = str(time_var.calendar).lower()
-    except Exception:
+    except AttributeError:
         fre_logger.debug('could not find calendar attribute on time axis. moving on.')
 
     if calendar_val is None:
         try:
             calendar_val = str(time_var.calendar_type).lower()
-        except Exception:
+        except AttributeError:
             fre_logger.debug('could not find calendar_type attribute on time axis. moving on.')
 
     return normalize_calendar(calendar_val)
@@ -165,7 +164,7 @@ def print_data_minmax( ds_variable: Optional[np.ma.core.MaskedArray] = None,
     try:
         fre_logger.info('info for \n desc = %s \n %s', desc, type(ds_variable))
         fre_logger.info('%s < %s < %s', ds_variable.min(), desc, ds_variable.max())
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         fre_logger.warning('could not print min/max entries for desc = %s', desc)
 
 
@@ -185,7 +184,7 @@ def from_ds_get_this( from_ds: Dataset,
     """
     try:
         return from_ds[var_name][:].copy()
-    except Exception:
+    except (IndexError, KeyError, OSError, RuntimeError, TypeError):
         fre_logger.exception('could not retrieve variable: %s\n returning None!\n', var_name)
         return None
 
@@ -536,9 +535,7 @@ def create_lev_bnds(bound_these: Variable) -> np.ndarray:
     # Initialize a float array to prevent decimal truncation
     the_bnds = np.zeros((len(bound_these), 2), dtype=float)
 
-    for i in range(len(bound_these)):
-        z_l = bound_these[i]
-
+    for i, z_l in enumerate(bound_these):
         if i == 0:
             z_l_lo = 0.0
             z_l_hi = 2.0 * z_l
@@ -586,21 +583,21 @@ def get_iso_datetime_ranges( var_filenames: List[str],
     if stop is not None and len(stop) == 4:
         stop_yr_int = int(stop)
         start_stop_filter = True
-    fre_logger.debug('start_yr_int = %s', start_yr_int)
-    fre_logger.debug(' stop_yr_int = %s', stop_yr_int)
+    fre_logger.ddebug('start_yr_int = %s', start_yr_int)
+    fre_logger.ddebug(' stop_yr_int = %s', stop_yr_int)
 
     if iso_daterange_arr is None:
         raise ValueError(
             'this function requires the list one desires to fill with datetime ranges from filenames')
 
     for filename in var_filenames:
-        fre_logger.debug('filename = %s', filename)
+        fre_logger.ddebug('filename = %s', filename)
         iso_daterange = filename.split('.')[-3]  # '????????-????????'
-        fre_logger.debug('iso_daterange = %s', iso_daterange)
+        fre_logger.ddebug('iso_daterange = %s', iso_daterange)
 
         if start_stop_filter:
             iso_datetimes = iso_daterange.split('-')
-            fre_logger.debug('iso_datetimes = %s', iso_datetimes)
+            fre_logger.ddebug('iso_datetimes = %s', iso_datetimes)
             if start is not None and int(iso_datetimes[0][0:4]) < start_yr_int:
                 continue
             if stop is not None and int(iso_datetimes[1][0:4]) > stop_yr_int:
@@ -784,7 +781,7 @@ def create_tmp_dir( outdir: str,
         with open(json_exp_config, 'r', encoding='utf-8') as table_config_file:
             try:
                 outdir_from_exp_config = json.load(table_config_file)['outpath']
-            except Exception:
+            except (json.JSONDecodeError, KeyError):
                 fre_logger.warning(
                     'could not read outdir from json_exp_config. the cmor module will throw a toothless warning')
 
@@ -795,10 +792,10 @@ def create_tmp_dir( outdir: str,
             fre_logger.info('attempting to create %s dir in tmp_dir targ', outdir_from_exp_config)
             try:
                 os.makedirs(tmp_dir + '/' + outdir_from_exp_config, exist_ok=True)
-            except Exception:
+            except OSError:
                 fre_logger.info('attempting to create %s dir in tmp_dir targ did not work', outdir_from_exp_config)
                 fre_logger.info('... attempt to avoid a toothless cmor warning failed... moving on')
-    except Exception as exc:
+    except OSError as exc:
         raise OSError(f'problem creating tmp output directory {tmp_dir}. stop.') from exc
 
     return tmp_dir
@@ -835,146 +832,78 @@ def get_json_file_data( json_file_path: Optional[str] = None) -> dict:
         raise
 
 
-def update_grid_and_label( json_file_path: str,
-                           new_grid_label: str,
-                           new_grid: str,
-                           new_nom_res: str,
-                           output_file_path: Optional[str] = None) -> None:
+def exp_config_overrides( grid_label: Optional[str] = None,
+                          grid: Optional[str] = None,
+                          nom_res: Optional[str] = None,
+                          calendar_type: Optional[str] = None) -> dict:
     """
-    Update the 'grid_label', 'grid', and 'nominal_resolution' fields in a JSON experiment config.
+    The experiment config attributes a run overrides, e.g. from the cmor yaml's gridding block and
+    calendar_type. They are set on CMOR's dataset for each variable, after the exp config is read,
+    rather than written into the exp config file, which other runs may be reading at the same time.
 
-    :param json_file_path: Path to the input JSON file.
-    :type json_file_path: str
-    :param new_grid_label: New value for the 'grid_label' field.
-    :type new_grid_label: str
-    :param new_grid: New value for the 'grid' field.
-    :type new_grid: str
-    :param new_nom_res: New value for the 'nominal_resolution' field.
-    :type new_nom_res: str
-    :param output_file_path: Path to save the updated JSON file. If None, overwrites the original file.
-    :type output_file_path: str, optional
-    :raises FileNotFoundError: If the input JSON file does not exist.
-    :raises KeyError: If a required field is not found in the JSON file.
-    :raises ValueError: If any input value is None.
-    :raises json.JSONDecodeError: If the JSON file cannot be decoded.
-    :return: None
-    :rtype: None
-
-    .. note:: The function logs before and after values, and overwrites the input file unless an output path is given.
+    :param grid_label: New value for the 'grid_label' attribute.
+    :type grid_label: str, optional
+    :param grid: New value for the 'grid' attribute.
+    :type grid: str, optional
+    :param nom_res: New value for the 'nominal_resolution' attribute.
+    :type nom_res: str, optional
+    :param calendar_type: New value for the 'calendar' attribute. CF calendar aliases (e.g., 'noleap')
+        are normalized to their canonical CF names (e.g., '365_day').
+    :type calendar_type: str, optional
+    :raises ValueError: If only some of grid_label, grid and nom_res are given.
+    :return: The overridden attributes and their values, only those given.
+    :rtype: dict
     """
-    if None in [new_grid_label, new_grid, new_nom_res]:
-        fre_logger.error(
-            'grid/grid_label/nom_res updating requested for exp_config file, but one of them is None\n'
-            'bailing...!')
-        raise ValueError
+    overrides = {}
+    gridding = {'grid_label': grid_label, 'grid': grid, 'nominal_resolution': nom_res}
+    if any(value is not None for value in gridding.values()):
+        if None in gridding.values():
+            fre_logger.error('grid/grid_label/nom_res overriding requested, but one of them is None\n'
+                             'bailing...!')
+            raise ValueError('grid, grid_label and nom_res must be given together, got '
+                             f'grid = {grid}, grid_label = {grid_label}, nom_res = {nom_res}')
+        overrides.update(gridding)
 
-    try:
-        with open(json_file_path, 'r', encoding='utf-8') as file:
-            data = json.load(file)
+    if calendar_type is not None:
+        normalized_calendar_type = normalize_calendar(calendar_type)
+        if normalized_calendar_type != str(calendar_type).lower():
+            fre_logger.info('Normalizing calendar alias %s to %s', calendar_type, normalized_calendar_type)
+        overrides['calendar'] = normalized_calendar_type
 
-        try:
-            fre_logger.info('Original grid: %s', data['grid'])
-            data['grid'] = new_grid
-            fre_logger.info('Updated grid: %s', data['grid'])
-        except KeyError as e:
-            fre_logger.error('Failed to update grid: %s', e)
-            raise KeyError('Error while updating grid. Ensure the field exists and is modifiable.') from e
-
-        try:
-            fre_logger.info('Original grid_label: %s', data['grid_label'])
-            data['grid_label'] = new_grid_label
-            fre_logger.info('Updated grid_label: %s', data['grid_label'])
-        except KeyError as e:
-            fre_logger.error('Failed to update grid_label: %s', e)
-            raise KeyError('Error while updating grid_label. Ensure the field exists and is modifiable.') from e
-
-        try:
-            fre_logger.info('Original nominal_resolution: %s', data['nominal_resolution'])
-            data['nominal_resolution'] = new_nom_res
-            fre_logger.info('Updated nominal_resolution: %s', data['nominal_resolution'])
-        except KeyError as e:
-            fre_logger.error('Failed to update nominal_resolution: %s', e)
-            raise KeyError('Error updating nominal_resolution. Ensure the field exists and is modifiable.') from e
-
-        output_file_path = output_file_path or json_file_path
-
-        with open(output_file_path, 'w', encoding='utf-8') as file:
-            json.dump(data, file, indent=4)
-
-        fre_logger.info('Successfully updated fields and saved to %s', output_file_path)
-
-    except FileNotFoundError:
-        fre_logger.error('The file %s does not exist.', json_file_path)
-        raise
-    except json.JSONDecodeError:
-        fre_logger.error('Failed to decode JSON from the file %s.', json_file_path)
-        raise
-    except Exception as e:
-        fre_logger.error('An unexpected error occurred: %s', e)
-        raise
+    return overrides
 
 
-def update_calendar_type( json_file_path: str,
-                          new_calendar_type: str,
-                          output_file_path: Optional[str] = None) -> None:
+def warn_overridden_exp_config(exp_config_data: dict, overrides: dict,
+                               json_exp_config: Optional[str] = None) -> List[str]:
     """
-    Update the 'calendar' field in a JSON experiment config file.
+    Warn about each attribute the experiment config sets that ``overrides`` replaces with a
+    different value at runtime, since the output will then not match the config. Equivalent
+    calendars, e.g. 'noleap' and '365_day', do not count as different.
 
-    :param json_file_path: Path to the input JSON file.
-    :type json_file_path: str
-    :param new_calendar_type: New value for the 'calendar' field.
-    :type new_calendar_type: str
-    :param output_file_path: Path to save the updated JSON file. If None, overwrites the original file.
-    :type output_file_path: str, optional
-    :raises FileNotFoundError: If the input JSON file does not exist.
-    :raises KeyError: If the 'calendar' field is not found in the JSON file.
-    :raises ValueError: If new_calendar_type is None.
-    :raises json.JSONDecodeError: If the JSON file cannot be decoded.
-    :return: None
-    :rtype: None
-
-    .. note:: The function logs before and after values, and overwrites the input file unless an output path is given.
-              CF calendar aliases (e.g., 'noleap') are normalized to their canonical CF names (e.g., '365_day').
+    :param exp_config_data: The loaded experiment configuration.
+    :type exp_config_data: dict
+    :param overrides: Attributes set on CMOR's dataset over the experiment config's, see
+        ``exp_config_overrides``.
+    :type overrides: dict
+    :param json_exp_config: Path to the experiment configuration, for the warning only.
+    :type json_exp_config: str, optional
+    :return: The names of the attributes overridden with a different value.
+    :rtype: list of str
     """
-    if new_calendar_type is None:
-        fre_logger.error(
-            'calendar_type updating requested for exp_config file, but one of them is None\n'
-            'bailing...!')
-        raise ValueError
+    overridden = []
+    for attribute, value in overrides.items():
+        if attribute not in exp_config_data:
+            continue
+        exp_value = exp_config_data[attribute]
+        if attribute == 'calendar' and calendars_are_equivalent(exp_value, value):
+            continue
+        if str(exp_value) == str(value):
+            continue
+        fre_logger.warning('%s = %r in the exp config %s is overridden by %r at runtime',
+                           attribute, exp_value, json_exp_config or '', value)
+        overridden.append(attribute)
+    return overridden
 
-    normalized_calendar_type = normalize_calendar(new_calendar_type)
-
-    try:
-        with open(json_file_path, 'r', encoding='utf-8') as file:
-            data = json.load(file)
-
-        try:
-            fre_logger.info('Original calendar: %s', data['calendar'])
-            if normalized_calendar_type != str(new_calendar_type).lower():
-                fre_logger.info('Normalizing calendar alias %s to %s',
-                                new_calendar_type, normalized_calendar_type)
-            data['calendar'] = normalized_calendar_type
-            fre_logger.info('Updated calendar: %s', data['calendar'])
-        except KeyError as e:
-            fre_logger.error('Failed to update calendar: %s', e)
-            raise KeyError('Error while updating calendar. Ensure the field exists and is modifiable.') from e
-
-        output_file_path = output_file_path or json_file_path
-
-        with open(output_file_path, 'w', encoding='utf-8') as file:
-            json.dump(data, file, indent=4)
-
-        fre_logger.info('Successfully updated fields and saved to %s', output_file_path)
-
-    except FileNotFoundError:
-        fre_logger.error('The file %s does not exist.', json_file_path)
-        raise
-    except json.JSONDecodeError:
-        fre_logger.error('Failed to decode JSON from the file %s.', json_file_path)
-        raise
-    except Exception as e:
-        fre_logger.error('An unexpected error occurred: %s', e)
-        raise
 
 def check_path_existence(some_path: str):
     """
@@ -1039,6 +968,33 @@ def conv_mip_to_bronx_freq(cmor_table_freq: str) -> Optional[str]:
     if cmor_table_freq not in cmor_to_bronx_dict:
         raise KeyError(f'MIP table frequency = {cmor_table_freq} is not a valid MIP frequency')
     return bronx_freq
+
+def conv_bronx_to_cmip7_freq(bronx_freq: str) -> str:
+    """
+    Convert a FRE-bronx frequency string to the CMIP7 ``frequency`` dataset attribute. CMIP7
+    tables carry no frequency, so CMOR takes it from the dataset instead.
+
+    :param bronx_freq: FRE-bronx frequency, e.g. 'monthly', 'daily'. A CMIP7 frequency, e.g.
+        'mon', is passed through.
+    :type bronx_freq: str
+    :raises ValueError: If the frequency has no CMIP7 equivalent.
+    :return: CMIP7 frequency string, e.g. 'mon'.
+    :rtype: str
+    """
+    bronx_to_cmip7_dict = {
+        '1hr'      : '1hr',
+        '3hr'      : '3hr',
+        '6hr'      : '6hr',
+        'daily'    : 'day',
+        'monthly'  : 'mon',
+        'annual'   : 'yr',
+        STATIC_FREQ: 'fx'
+    }
+    if bronx_freq in bronx_to_cmip7_dict.values():
+        return bronx_freq
+    if bronx_freq not in bronx_to_cmip7_dict:
+        raise ValueError(f'frequency = {bronx_freq} has no CMIP7 equivalent')
+    return bronx_to_cmip7_dict[bronx_freq]
 
 def get_bronx_freq_from_mip_table(json_table_config: str) -> str:
     """
@@ -1114,7 +1070,7 @@ def filter_brands( brands: list,
 
     filtered_brands = []
     for brand in brands:
-        
+
         mip_key = f'{target_var}_{brand}'
         mip_dims = mip_var_cfgs['variable_entry'][mip_key]['dimensions']
         mip_standard_name = mip_var_cfgs['variable_entry'][mip_key]['standard_name']
@@ -1166,7 +1122,7 @@ def filter_brands( brands: list,
             fre_logger.debug("filtering out brand %s: input var standard_name does not match mip table's", brand )
             continue
 
-        fre_logger.debug(f'appending %s to list of possible brands', brand)
+        fre_logger.debug('appending %s to list of possible brands', brand)
         filtered_brands.append(brand)
 
     if len(filtered_brands) == 1:

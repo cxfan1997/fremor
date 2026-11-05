@@ -41,22 +41,24 @@ class FremorCommand(click.Command):
     and provide a user-friendly error message.
     """
     def make_context(self, info_name, args, parent=None, **extra):
-            try:
-                return super().make_context(info_name, args, parent=parent, **extra)
-            except click.NoSuchOption as e:
-                if e.option_name in MISPLACED_GLOBAL_FLAGS:
-                    # Provide the clear, specific error message requested in #219
-                    click.secho(
-                        f"Error: The '{e.option_name}' flag is in the wrong spot. "
-                        f"Global flags must be placed before the command (e.g., `fremor {e.option_name} {info_name}`).",
-                        fg="red", err=True
-                    )
-                    sys.exit(2)
-                raise # Re-raise if it's a genuinely unknown flag
+        """Create a command context and explain misplaced global flags."""
+        try:
+            return super().make_context(info_name, args, parent=parent, **extra)
+        except click.NoSuchOption as e:
+            if e.option_name in MISPLACED_GLOBAL_FLAGS:
+                # Provide the clear, specific error message requested in #219
+                click.secho(
+                    f'Error: The "{e.option_name}" flag is in the wrong spot. '
+                    f'Global flags must be placed before the command (e.g., `fremor {e.option_name} {info_name}`).',
+                    fg='red', err=True
+                )
+                sys.exit(2)
+            raise # Re-raise if it's a genuinely unknown flag
 
 class FremorGroup(click.Group):
     """Main group that automatically uses FremorCommand for all subcommands."""
     def command(self, *args, **kwargs):
+        """Register a subcommand that uses FremorCommand by default."""
         kwargs.setdefault('cls', FremorCommand)
         return super().command(*args, **kwargs)
 
@@ -285,8 +287,9 @@ def find(varlist, table_config_dir, opt_var_name):
                    '<pp_dir>/<component>/<component>.static.nc holding all of them',
               required=True)
 @click.option('--varlist', type = str,
-              help=VARLIST_HELP,
-              required=True)
+              help=VARLIST_HELP + ' Required unless --opt-var-name is provided; if omitted, '
+                                  '--opt-var-name is used as both the input and MIP variable name.',
+              required=False)
 @click.option('-r', '--table-config', '--table_config', type = str,
               help='json file containing CMIP-compliant per-variable/metadata for specific ' + \
                    'MIP table. The MIP table can generally be identified by the specific ' + \
@@ -304,7 +307,8 @@ def find(varlist, table_config_dir, opt_var_name):
               help=RUN_ONE_HELP,
               required = False)
 @click.option('--opt-var-name', '--opt_var_name', type = str, default = None,
-              help=OPT_VAR_NAME_HELP,
+              help='Variable to process. Without --varlist, the name is used for both the input '
+                   'and MIP table variable.',
               required=False)
 @click.option('-g', '--grid-label', '--grid_label', type = str, default = None,
               help = 'label representing grid type of input data, e.g. gn for native or gr for regridded, ' + \
@@ -329,11 +333,19 @@ def find(varlist, table_config_dir, opt_var_name):
 @click.option('--calendar', type=str, default=None,
               help = 'calendar type, e.g. 360_day, noleap, gregorian... etc',
               required = False)
+@click.option('--freq', type=str, default=None,
+              help = 'frequency of the input data, e.g. monthly, daily. For CMIP7, whose tables carry no ' + \
+                     'frequency, it sets the frequency CMOR expects. If not given, the frequency in the ' + \
+                     'experiment configuration file is used.',
+              required = False)
 def run(indir, varlist, table_config, exp_config, outdir, run_one, opt_var_name,
-        grid_label, grid_desc, nom_res, start, stop, calendar):
+        grid_label, grid_desc, nom_res, start, stop, calendar, freq):
     """
     Rewrite climate model output files with CMIP-compliant metadata for down-stream publishing
     """
+    if varlist is None and not opt_var_name:
+        raise click.UsageError('either --varlist or --opt-var-name must be provided')
+
     cmor_run_subtool(
         indir = indir,
         json_var_list = varlist,
@@ -347,16 +359,19 @@ def run(indir, varlist, table_config, exp_config, outdir, run_one, opt_var_name,
         nom_res = nom_res,
         start = start,
         stop = stop,
-        calendar_type = calendar
+        calendar_type = calendar,
+        freq = freq
     )
 
 
 @fremor.command('varlist')
-@click.option('-d', '--dir-targ', '--dir_targ', type=str, required=True, help='Target directory')
+@click.option('-d', '--dir-targ', '--dir_targ', type=str, required=True,
+              help='Target directory')
 @click.option('--strict_mode', is_flag = True, default = False,
               help=VARLIST_STRICT_MODE_HELP,
               required=False)
-@click.option('-o', '--output-variable-list', '--output_variable_list', type=str, required=True, help='Output variable list file')
+@click.option('-o', '--output-variable-list', '--output_variable_list', type=str, required=True,
+              help='Output variable list file')
 @click.option('-t', '--mip-table', '--mip_table', type=str, required=False, default=None,
               help='Target MIP table for making variable list')
 def varlist_(dir_targ, strict_mode, output_variable_list, mip_table):
@@ -462,7 +477,8 @@ def config(pp_dir, mip_tables_dir, mip_era, exp_config, output_yaml, output_dir,
                    'input file\'s vertical dimension matches what the MIP table declares (e.g. '
                    'distinguishing model-level "alevel" output from fixed "plevNN" pressure '
                    'levels), and whether hybrid-sigma variables have their companion .ps.nc '
-                   'file present. For CMIP7, checks that lat-lon input grids match the grid label. Only inspects one file\'s header per variable.')
+                   'file present. For CMIP7, checks that lat-lon input grids match the grid label. '
+                   'Only inspects one file\'s header per variable.')
 @click.option('--check-outputs', '--check_outputs', is_flag=True, default=False,
               help='For every one-to-one-mapped variable, also report whether CMOR has '
                    'actually produced matching output file(s) under the yaml\'s outdir, plus '
@@ -604,8 +620,8 @@ def map_(tables, yamlfile, ncinfo_bin, dmls_bin):
                    'When omitted and --tables_dir is also omitted, a default '
                    'filename is used.')
 @click.option('-t', '--tables-dir', '--tables_dir', type=str, default=None,
-              help='Directory into which MIP tables will be fetched from '
-                   'trusted sources. Omit to skip table retrieval.')
+              help='Parent directory under which the MIP table repository will be fetched '
+                   'from trusted sources. Omit to skip table retrieval.')
 @click.option('--tag', type=str, default=None,
               help='Specific git tag or release for the MIP tables repository.')
 @click.option('--fast', is_flag=True, default=False,

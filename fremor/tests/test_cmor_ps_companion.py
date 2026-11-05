@@ -10,6 +10,7 @@ import pytest
 
 from fremor import cmor_mixer, cmor_yamler
 from fremor.cmor_helpers import find_ps_companion, resolve_named_ps_source, table_declares_ps
+from fremor.tests._cmor_test_helpers import write_minimal_cmip6_cmor_yaml
 
 ROOTDIR = Path(__file__).parent / 'test_files'
 CMIP6_TABLE_CONFIG = ROOTDIR / 'cmip6-cmor-tables' / 'Tables' / 'CMIP6_Amon.json'
@@ -200,6 +201,34 @@ def test_cmor_run_subtool_runs_mapped_ps_first(monkeypatch, tmp_path):
     assert captured['ps_source'] == {'indir': str(indir), 'local_var': 'pres'}
 
 
+def test_cmor_run_subtool_warns_when_multiple_local_variables_map_to_ps(
+        monkeypatch, tmp_path, caplog):
+    ''' all ps candidates are reported, while the first listed source remains the companion '''
+    captured = _capture_cmorize_all(monkeypatch)
+    indir = tmp_path / 'indir'
+    for local_var in ('tas', 'pressure_a', 'pressure_b'):
+        _touch(indir / f'atmos.197901-198312.{local_var}.nc')
+    varlist = tmp_path / 'varlist.json'
+    varlist.write_text(json.dumps({
+        'tas': 'tas',
+        'pressure_a': 'ps',
+        'pressure_b': 'ps',
+    }), encoding='utf-8')
+
+    with caplog.at_level('WARNING', logger='fremor.cmor_mixer'):
+        cmor_mixer.cmor_run_subtool(
+            indir=str(indir),
+            json_var_list=str(varlist),
+            json_table_config=str(CMIP6_TABLE_CONFIG),
+            json_exp_config=str(CMIP6_EXP_CONFIG),
+            outdir=str(tmp_path / 'out'),
+        )
+
+    assert "multiple local variables map to ps: ['pressure_a', 'pressure_b']" in caplog.text
+    assert captured['ps_source'] == {'indir': str(indir), 'local_var': 'pressure_a'}
+    assert captured['vars_to_run'][0] == ('pressure_a', 'ps')
+
+
 def test_cmor_run_subtool_keeps_given_ps_source(monkeypatch, tmp_path):
     ''' an explicitly passed ps_source (e.g. from fremor yaml) is not overridden '''
     captured = _capture_cmorize_all(monkeypatch)
@@ -250,28 +279,31 @@ def test_cmor_yaml_subtool_uses_table_ps_across_components(monkeypatch, tmp_path
     atmos_list.write_text(json.dumps({'pres': 'ps'}), encoding='utf-8')
 
     yamlfile = tmp_path / 'test.yaml'
-    yamlfile.write_text(f"""
-cmor:
-  mip_era: CMIP6
-  directories:
-    pp_dir: {pp_dir}
-    table_dir: {table_dir}
-    outdir: {outdir}
-  exp_json: {exp_json}
-  table_targets:
-    - table_name: Amon
-      freq: monthly
-      gridding: null
-      target_components:
-        - component_name: atmos_level
-          chunk: "P5Y"
-          data_series_type: ts
-          variable_list: "{level_list}"
-        - component_name: atmos
-          chunk: "P5Y"
-          data_series_type: ts
-          variable_list: "{atmos_list}"
-""", encoding='utf-8')
+    write_minimal_cmip6_cmor_yaml(
+        yamlfile,
+        tmp_path,
+        [
+            {
+                'table_name': 'Amon',
+                'freq': 'monthly',
+                'gridding': None,
+                'target_components': [
+                    {
+                        'component_name': 'atmos_level',
+                        'chunk': 'P5Y',
+                        'data_series_type': 'ts',
+                        'variable_list': str(level_list),
+                    },
+                    {
+                        'component_name': 'atmos',
+                        'chunk': 'P5Y',
+                        'data_series_type': 'ts',
+                        'variable_list': str(atmos_list),
+                    },
+                ],
+            }
+        ],
+    )
 
     calls = []
     monkeypatch.setattr(cmor_yamler, 'cmor_run_subtool',

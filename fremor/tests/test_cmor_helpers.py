@@ -5,6 +5,8 @@ tests for fremor helper functions in cmor_helpers
 import json
 from pathlib import Path
 import re
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -12,14 +14,16 @@ import pytest
 import netCDF4
 import cmor
 
+from fremor import cmor_helpers
 from fremor.cmor_constants import CMOR_EXIT_CTL, CMOR_EXIT_CTL_BY_ERA
 from fremor.cmor_helpers import ( find_statics_file, print_data_minmax, variable_grid_label,
                                   find_gold_ocean_statics_file,
-                                  create_lev_bnds, get_iso_datetime_ranges, iso_to_bronx_chunk,
+                                  get_iso_datetime_ranges, iso_to_bronx_chunk,
                                   create_tmp_dir, get_json_file_data,
-                                  update_grid_and_label, get_bronx_freq_from_mip_table,
+                                  get_bronx_freq_from_mip_table,
                                   filter_brands, get_vertical_dimension,
-                                  from_ds_get_this, resolve_mip_era_table_resource )
+                                  from_ds_get_this, resolve_mip_era_table_resource,
+                                  find_ps_companion, resolve_cmip7_brand )
 
 def test_iso_to_bronx_chunk():
     """ tests value error raising by iso_to_bronx_chunk """
@@ -72,63 +76,99 @@ def test_print_data_minmax_no_exception_case3():
 
 # ---- find_gold_ocean_statics_file tests ----
 
-def test_find_gold_ocean_statics_file_none_arg():
+_GOLD_OCEAN_FILE_STUB = 'OM5_025/ocean_mosaic/ocean_static.nc'
+
+
+def _patch_gold_archive(monkeypatch, archive_root):
+    ''' redirect only the archive location and gold-file path constants '''
+    monkeypatch.setattr(cmor_helpers, 'ARCHIVE_GOLD_DATA_DIR', str(archive_root))
+    monkeypatch.setattr(cmor_helpers, 'CMIP7_GOLD_OCEAN_FILE_STUB', _GOLD_OCEAN_FILE_STUB)
+
+
+def test_find_gold_ocean_statics_file_none_arg(tmp_path, monkeypatch, caplog):
     """ put_copy_here=None should return None immediately """
-    result = find_gold_ocean_statics_file(put_copy_here=None)
+    archive_root = tmp_path / 'archive'
+    archive_file = archive_root / _GOLD_OCEAN_FILE_STUB
+    archive_file.parent.mkdir(parents=True)
+    archive_file.touch()
+    _patch_gold_archive(monkeypatch, archive_root)
+
+    with caplog.at_level('WARNING', logger='fremor.cmor_helpers'):
+        result = find_gold_ocean_statics_file(put_copy_here=None)
+
     assert result is None
+    assert 'put_copy_here is None, cannot stage gold ocean statics file' in caplog.text
 
 
-def test_find_gold_ocean_statics_file_archive_missing(tmp_path):
-    """
-    when the archive gold file does not exist on disk (i.e. not at PPAN),
-    the function should create the local directory tree but return None
-    because there's nothing to copy.
-    """
-    from fremor.cmor_constants import ARCHIVE_GOLD_DATA_DIR, CMIP7_GOLD_OCEAN_FILE_STUB # pylint: disable=import-outside-toplevel
-    gold_file = f'{ARCHIVE_GOLD_DATA_DIR}/{CMIP7_GOLD_OCEAN_FILE_STUB}'
-
-    result = find_gold_ocean_statics_file(put_copy_here=str(tmp_path))
-    # on dev boxes the archive path won't exist, so we get None
-    if result is None:
-        if Path(gold_file).is_file():
-            assert False, (
-                f'gold file exists at {gold_file} but function returned None. error!'
-            )
-    else:
-        # if we happen to be at PPAN and it succeeded, just check it's a real file
-        assert Path(result).is_file()
-    assert True
-
-
-def test_find_gold_ocean_statics_file_mock_copy(tmp_path):
-    """
-    exercise the full copy path by creating a fake archive gold file in tmp_path
-    and monkeypatching ARCHIVE_GOLD_DATA_DIR so the function finds it.
-    """
-    import fremor.cmor_helpers as _helpers_mod # pylint: disable=import-outside-toplevel
-    import fremor.cmor_constants as _const_mod # pylint: disable=import-outside-toplevel
-
-    # build a fake archive layout:  <tmp>/gold/datasets/OM5_025/.../ocean_static.nc
-    fake_archive_root = tmp_path / 'fake_archive' / 'gold' / 'datasets'
-    fake_gold_file = fake_archive_root / 'OM5_025' / 'ocean_mosaic_v20250916_unpacked' / 'ocean_static_no_basin.nc'
-    fake_gold_file.parent.mkdir(parents=True, exist_ok=True)
-    fake_gold_file.write_text('placeholder')
-
+def test_find_gold_ocean_statics_file_archive_missing(tmp_path, monkeypatch, caplog):
+    """a missing archive file warns and returns None without creating a local copy"""
+    archive_root = tmp_path / 'archive'
+    archive_root.mkdir()
+    _patch_gold_archive(monkeypatch, archive_root)
     staging_dir = tmp_path / 'staging'
 
-    # monkeypatch the constant in both cmor_constants and cmor_helpers (where it's already imported)
-    original_val = _const_mod.ARCHIVE_GOLD_DATA_DIR
-    try:
-        _const_mod.ARCHIVE_GOLD_DATA_DIR = str(fake_archive_root)
-        _helpers_mod.ARCHIVE_GOLD_DATA_DIR = str(fake_archive_root)
+    with caplog.at_level('WARNING', logger='fremor.cmor_helpers'):
         result = find_gold_ocean_statics_file(put_copy_here=str(staging_dir))
-    finally:
-        _const_mod.ARCHIVE_GOLD_DATA_DIR = original_val
-        _helpers_mod.ARCHIVE_GOLD_DATA_DIR = original_val
 
-    assert result is not None
-    assert Path(result).is_file()
-    assert 'ocean_static_no_basin.nc' in result
+    assert result is None
+    assert not staging_dir.exists()
+    assert 'gold archive file does not exist' in caplog.text
+
+
+def test_find_gold_ocean_statics_file_copies_and_reuses_archive_file(tmp_path, monkeypatch, caplog):
+    """the archive file is copied under its mirrored path, then reused on a later call"""
+    archive_root = tmp_path / 'archive'
+    archive_file = archive_root / _GOLD_OCEAN_FILE_STUB
+    archive_file.parent.mkdir(parents=True)
+    archive_file.write_bytes(b'gold ocean statics')
+    _patch_gold_archive(monkeypatch, archive_root)
+    staging_dir = tmp_path / 'staging'
+
+    copied_file = find_gold_ocean_statics_file(put_copy_here=str(staging_dir))
+    expected_file = staging_dir / Path(_GOLD_OCEAN_FILE_STUB)
+
+    assert copied_file == str(expected_file)
+    assert expected_file.read_bytes() == b'gold ocean statics'
+
+    with caplog.at_level('WARNING', logger='fremor.cmor_helpers'):
+        reused_file = find_gold_ocean_statics_file(put_copy_here=str(staging_dir))
+
+    assert reused_file == copied_file
+    assert 'a previous copy of the ocean statics file exists' in caplog.text
+
+
+def test_find_gold_ocean_statics_file_replaces_stale_directory(tmp_path, monkeypatch, caplog):
+    """a directory left at the destination path is removed before copying the file"""
+    archive_root = tmp_path / 'archive'
+    archive_file = archive_root / _GOLD_OCEAN_FILE_STUB
+    archive_file.parent.mkdir(parents=True)
+    archive_file.write_bytes(b'gold ocean statics')
+    _patch_gold_archive(monkeypatch, archive_root)
+    staging_dir = tmp_path / 'staging'
+    destination = staging_dir / Path(_GOLD_OCEAN_FILE_STUB)
+    destination.mkdir(parents=True)
+    (destination / 'stale').touch()
+
+    with caplog.at_level('WARNING', logger='fremor.cmor_helpers'):
+        copied_file = find_gold_ocean_statics_file(put_copy_here=str(staging_dir))
+
+    assert copied_file == str(destination)
+    assert destination.is_file()
+    assert destination.read_bytes() == b'gold ocean statics'
+    assert 'prior buggy mkdir suspected' in caplog.text
+
+
+def test_find_gold_ocean_statics_file_reports_copy_failure(tmp_path, monkeypatch, caplog):
+    """a directory at the archive-file path makes cp fail and returns None"""
+    archive_root = tmp_path / 'archive'
+    (archive_root / _GOLD_OCEAN_FILE_STUB).mkdir(parents=True)
+    _patch_gold_archive(monkeypatch, archive_root)
+
+    with caplog.at_level('WARNING', logger='fremor.cmor_helpers'):
+        result = find_gold_ocean_statics_file(put_copy_here=str(tmp_path / 'staging'))
+
+    assert result is None
+    assert 'cp of gold statics file failed' in caplog.text
 
 
 # ---- get_iso_datetime_ranges with stop_yr ----
@@ -264,32 +304,6 @@ def test_get_json_file_data_actually_dir(tmp_path):
     f.mkdir(parents=True)
     with pytest.raises(Exception):
         get_json_file_data(str(f))
-
-# ---- update_grid_and_label None-args test ----
-
-def test_update_grid_and_label_none_grid_label(tmp_path):
-    """ should raise ValueError when new_grid_label is None """
-    f = tmp_path / 'exp.json'
-    f.write_text(json.dumps({'grid_label': 'gr', 'grid': 'g', 'nominal_resolution': '50 km'}))
-    with pytest.raises(ValueError):
-        update_grid_and_label(str(f), None, 'new_grid', '100 km')
-
-
-def test_update_grid_and_label_none_grid(tmp_path):
-    """ should raise ValueError when new_grid is None """
-    f = tmp_path / 'exp.json'
-    f.write_text(json.dumps({'grid_label': 'gr', 'grid': 'g', 'nominal_resolution': '50 km'}))
-    with pytest.raises(ValueError):
-        update_grid_and_label(str(f), 'gn', None, '100 km')
-
-
-def test_update_grid_and_label_none_nom_res(tmp_path):
-    """ should raise ValueError when new_nom_res is None """
-    f = tmp_path / 'exp.json'
-    f.write_text(json.dumps({'grid_label': 'gr', 'grid': 'g', 'nominal_resolution': '50 km'}))
-    with pytest.raises(ValueError):
-        update_grid_and_label(str(f), 'gn', 'new_grid', None)
-
 
 # ---- get_bronx_freq_from_mip_table tests ----
 
@@ -501,31 +515,19 @@ def _make_mock_dataset(dims_info):
     Returns an object with a ``variables`` dict containing a single variable 'var'
     whose dimensions are the keys of ``dims_info``.
     """
-    class MockVar:
-        def __init__(self, attrs):
-            self._attrs = attrs or {}
-        def ncattrs(self):
-            return list(self._attrs.keys())
-        def __getattr__(self, name):
-            if name.startswith('_'):
-                raise AttributeError(name)
-            try:
-                return self._attrs[name]
-            except KeyError:
-                raise AttributeError(name)
+    dimensions = {}
+    for name, attrs in dims_info.items():
+        variable = MagicMock()
+        attrs = attrs or {}
+        variable.ncattrs.return_value = list(attrs)
+        for attr_name, value in attrs.items():
+            setattr(variable, attr_name, value)
+        dimensions[name] = variable
 
-    class MockDataVar:
-        def __init__(self, dims):
-            self.dimensions = tuple(dims)
-
-    class MockDS:
-        def __init__(self, dims_info):
-            self._dims = {k: MockVar(v) for k, v in dims_info.items()}
-            self.variables = {'var': MockDataVar(list(dims_info.keys()))}
-        def __getitem__(self, key):
-            return self._dims[key]
-
-    return MockDS(dims_info)
+    dataset = MagicMock()
+    dataset.variables = {'var': SimpleNamespace(dimensions=tuple(dims_info))}
+    dataset.__getitem__.side_effect = dimensions.__getitem__
+    return dataset
 
 
 def test_get_vertical_dimension_axis_z():
@@ -730,3 +732,113 @@ def test_variable_grid_label_cmip6(table, var, table_label, expected):
 def test_variable_grid_label_cmip7(realm, key, region, expected):
     ''' CMIP7 hm brands get the EMD single-cell grid for the region '''
     assert variable_grid_label('CMIP7', key, _cmip7_entry(realm, key), 'g100', region) == expected
+
+
+def test_find_ps_companion_warns_and_uses_first_duplicate_source(tmp_path, caplog):
+    ''' duplicate table-mapped ps files are reported and the sorted first match is selected '''
+    input_file = tmp_path / 'component.20000101.tas.nc'
+    ps_dir = tmp_path / 'ps_source'
+    ps_dir.mkdir()
+    first = ps_dir / 'a.20000101.ps_local.nc'
+    second = ps_dir / 'b.20000101.ps_local.nc'
+    first.touch()
+    second.touch()
+
+    with caplog.at_level('WARNING', logger='fremor.cmor_helpers'):
+        ps_file, ps_var, searched = find_ps_companion(
+            input_file, 'tas', ps_source={'indir': str(ps_dir), 'local_var': 'ps_local'})
+
+    assert ps_file == str(first)
+    assert ps_var == 'ps_local'
+    assert len(searched) == 1
+    assert 'multiple ps files match' in caplog.text
+
+
+@pytest.mark.parametrize('cell_methods, expected', [
+    ('time: maximum', 'tmax-2d'),
+    ('time: minimum', 'tmin-2d'),
+    ('time: point', 'tpt-2d'),
+])
+def test_filter_brands_cell_method_temporal_prefixes(cell_methods, expected):
+    ''' maximum, minimum, and point cell methods select the matching CMIP7 temporal brand '''
+    brands = ['tmax-2d', 'tmin-2d', 'tpt-2d']
+    mip = _make_mip_var_cfgs({
+        f'tas_{brand}': 'longitude latitude time' for brand in brands
+    })
+
+    assert filter_brands(
+        brands=brands,
+        target_var='tas',
+        mip_var_cfgs=mip,
+        has_time_bnds=True,
+        input_vert_dim=0,
+        cell_methods=cell_methods,
+    ) == expected
+
+
+def test_resolve_cmip7_brand_rejects_no_dimension_match(tmp_path):
+    ''' a target with no table entry of the input variable's dimensionality cannot resolve '''
+    input_file = tmp_path / 'input.nc'
+    with netCDF4.Dataset(input_file, 'w') as ds:
+        ds.createDimension('time', 2)
+        ds.createVariable('sos', 'f4', ('time',))
+        mip = {'variable_entry': {
+            'sos_tavg-u-hxy-sea': {'dimensions': ['longitude', 'latitude', 'time']},
+        }}
+        with pytest.raises(ValueError, match='no sos brand in the table'):
+            resolve_cmip7_brand(ds, 'sos', 'sos', mip, var_dim_with_scalars=1)
+
+
+def test_resolve_mip_era_table_resource_generic_missing_message(tmp_path):
+    ''' missing non-CMIP6Plus resources explain the incomplete table set '''
+    table_dir = tmp_path / 'Tables'
+    table_dir.mkdir()
+    table = table_dir / 'CMIP6_Omon.json'
+    table.write_text('{}', encoding='utf-8')
+
+    with pytest.raises(FileNotFoundError, match='complete CMIP6 table set'):
+        resolve_mip_era_table_resource(str(table), 'CMIP6', 'grids')
+
+
+def test_resolve_mip_era_table_resource_skips_unreadable_candidate(tmp_path, caplog):
+    ''' an invalid JSON auxiliary file is logged and treated as unusable '''
+    table_dir = tmp_path / 'Tables'
+    table_dir.mkdir()
+    table = table_dir / 'CMIP6_Omon.json'
+    table.write_text('{}', encoding='utf-8')
+    (table_dir / 'CMIP6_grids.json').write_text('{invalid json', encoding='utf-8')
+
+    with caplog.at_level('WARNING', logger='fremor.cmor_helpers'):
+        with pytest.raises(FileNotFoundError, match='found but unusable'):
+            resolve_mip_era_table_resource(str(table), 'CMIP6', 'grids')
+
+    assert 'could not read' in caplog.text
+
+
+def test_create_tmp_dir_logs_missing_exp_outpath(tmp_path, caplog):
+    ''' an experiment config without outpath produces the warning and still creates CMOR_tmp '''
+    exp_config = tmp_path / 'exp.json'
+    exp_config.write_text('{}', encoding='utf-8')
+
+    with caplog.at_level('WARNING', logger='fremor.cmor_helpers'):
+        result = create_tmp_dir(str(tmp_path), str(exp_config))
+
+    assert Path(result).is_dir()
+    assert 'could not read outdir from json_exp_config' in caplog.text
+
+
+def test_create_tmp_dir_continues_when_exp_subdirectory_cannot_be_created(tmp_path, caplog):
+    ''' an outpath below a regular file cannot be made, but CMOR_tmp remains usable '''
+    exp_config = tmp_path / 'exp.json'
+    exp_config.write_text(json.dumps({'outpath': 'blocker/child'}), encoding='utf-8')
+    tmp_dir = tmp_path / 'CMOR_tmp'
+    tmp_dir.mkdir()
+    (tmp_dir / 'blocker').touch()
+
+    with caplog.at_level('INFO', logger='fremor.cmor_helpers'):
+        result = create_tmp_dir(str(tmp_path), str(exp_config))
+
+    assert result == str(tmp_dir.resolve())
+    assert Path(result).is_dir()
+    assert 'attempting to create blocker/child dir' in caplog.text
+    assert 'moving on' in caplog.text

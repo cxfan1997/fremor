@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 import fremor
-from fremor.cmor_yamler import cmor_yaml_subtool
+from fremor.cmor_yamler import _find_table_ps_source, cmor_yaml_subtool
 
 
 ROOTDIR = str(Path(fremor.__file__).parent) + '/tests/test_files'
@@ -30,40 +30,50 @@ GRID_LABEL = 'gr'
 NOM_RES = '10000 km'
 
 
-def _build_cmor_dict(*, pp_dir, table_dir, outdir, exp_config,
-                     varlist, mip_era='CMIP6', table_name='Omon',
-                     freq='monthly', component='ocean_monthly_1x1deg',
-                     chunk='P5Y', data_series_type='ts',
-                     gridding=None, start='1993', stop='1993',
-                     calendar_type='julian'):
+def _build_cmor_dict(*, pp_dir, table_dir, outdir, exp_config, varlist,
+                     config_overrides=None):
     """Build the CMOR YAML mapping consumed by cmor_yaml_subtool."""
-    if gridding is None:
-        gridding = {
+    settings = {
+        'mip_era': 'CMIP6',
+        'table_name': 'Omon',
+        'freq': 'monthly',
+        'component': 'ocean_monthly_1x1deg',
+        'chunk': 'P5Y',
+        'data_series_type': 'ts',
+        'gridding': None,
+        'start': '1993',
+        'stop': '1993',
+        'calendar_type': 'julian',
+    }
+    if config_overrides is not None:
+        settings.update(config_overrides)
+    if settings['gridding'] is None:
+        settings['gridding'] = {
             'grid_label': GRID_LABEL,
             'grid_desc': GRID,
             'nom_res': NOM_RES,
         }
     return {
-        'mip_era': mip_era,
+        'mip_era': settings['mip_era'],
         'directories': {
             'pp_dir': pp_dir,
             'table_dir': table_dir,
             'outdir': outdir,
         },
         'exp_json': exp_config,
-        'start': start,
-        'stop': stop,
-        'calendar_type': calendar_type,
+        'start': settings['start'],
+        'stop': settings['stop'],
+        'calendar_type': settings['calendar_type'],
         'table_targets': [
             {
-                'table_name': table_name,
-                'freq': freq,
-                'gridding': gridding,
+                'table_name': settings['table_name'],
+                'freq': settings['freq'],
+                'gridding': settings['gridding'],
                 'target_components': [
                     {
-                        'component_name': component,
-                        'chunk': chunk,
-                        'data_series_type': data_series_type,
+                        'component_name': settings['component'],
+                        'chunk': settings['chunk'],
+                        'data_series_type': settings['data_series_type'],
                         'variable_list': varlist,
                     }
                 ],
@@ -89,6 +99,86 @@ def _write_table_json(table_dir, era, table_name, frequency='mon'):
         encoding='utf-8',
     )
     return str(table_dir)
+
+
+def test_find_table_ps_source_skips_unreadable_table(tmp_path, caplog):
+    """A malformed MIP table warns and is left for the component run to report."""
+    table_path = tmp_path / 'CMIP6_Omon.json'
+    table_path.write_text('{invalid json', encoding='utf-8')
+
+    with caplog.at_level(logging.WARNING, logger='fremor.cmor_yamler'):
+        result = _find_table_ps_source(str(table_path), [], str(tmp_path / 'pp'), 'monthly')
+
+    assert result == (None, None)
+    assert f'could not read {table_path} while looking for a ps entry, skipping' in caplog.text
+
+
+def test_find_table_ps_source_skips_unreadable_variable_list(tmp_path, caplog):
+    """A missing component variable list warns and is skipped while searching for ps."""
+    table_path = tmp_path / 'CMIP6_Omon.json'
+    table_path.write_text(json.dumps({'variable_entry': {'ps': {}}}), encoding='utf-8')
+    variable_list = tmp_path / 'missing-varlist.json'
+    components = [{
+        'component_name': 'atmos',
+        'data_series_type': 'ts',
+        'chunk': 'P5Y',
+        'variable_list': str(variable_list),
+    }]
+
+    with caplog.at_level(logging.WARNING, logger='fremor.cmor_yamler'):
+        result = _find_table_ps_source(str(table_path), components, str(tmp_path / 'pp'),
+                                      'monthly')
+
+    assert result == (None, None)
+    assert (f'could not read {variable_list} while looking for a ps mapping, skipping it'
+            in caplog.text)
+
+
+def test_find_table_ps_source_returns_none_without_ps_mapping(tmp_path):
+    """A table declaring ps but with no component mapping it needs no ps source."""
+    table_path = tmp_path / 'CMIP6_Omon.json'
+    table_path.write_text(json.dumps({'variable_entry': {'ps': {}}}), encoding='utf-8')
+    varlist_path = tmp_path / 'varlist.json'
+    varlist_path.write_text(json.dumps({'surface_temp': 'sos'}), encoding='utf-8')
+    components = [{
+        'component_name': 'atmos',
+        'data_series_type': 'ts',
+        'chunk': 'P5Y',
+        'variable_list': str(varlist_path),
+    }]
+
+    assert _find_table_ps_source(str(table_path), components, str(tmp_path / 'pp'),
+                                 'monthly') == (None, None)
+
+
+def test_find_table_ps_source_warns_and_uses_first_of_multiple_mappings(tmp_path, caplog):
+    """When multiple local variables map to ps, the first component supplies its source."""
+    table_path = tmp_path / 'CMIP6_Omon.json'
+    table_path.write_text(json.dumps({'variable_entry': {'ps': {}}}), encoding='utf-8')
+    varlists = []
+    for name, local_var in (('atmos', 'surface_pressure'), ('ocean', 'ps_local')):
+        varlist_path = tmp_path / f'{name}.json'
+        varlist_path.write_text(json.dumps({local_var: 'ps'}), encoding='utf-8')
+        varlists.append({
+            'component_name': name,
+            'data_series_type': 'ts',
+            'chunk': 'P5Y',
+            'variable_list': str(varlist_path),
+        })
+
+    with caplog.at_level(logging.WARNING, logger='fremor.cmor_yamler'):
+        result = _find_table_ps_source(
+            str(table_path), varlists, str(tmp_path / 'pp'), 'monthly'
+        )
+
+    assert result == (
+        {
+            'indir': str(tmp_path / 'pp' / 'atmos' / 'ts' / 'monthly' / '5yr'),
+            'local_var': 'surface_pressure',
+        },
+        'atmos',
+    )
+    assert 'multiple ps mappings found' in caplog.text
 
 
 @pytest.fixture
@@ -239,7 +329,7 @@ def test_mip_table_file_does_not_exist(tmp_path):
             outdir=str(outdir),
             exp_config=str(local_exp),
             varlist=VARLIST,
-            table_name='NoSuchTable',
+            config_overrides={'table_name': 'NoSuchTable'},
         ),
     )
 
@@ -264,9 +354,11 @@ def test_cmip7_freq_none_raises(tmp_path):
             outdir=str(outdir),
             exp_config=str(local_exp),
             varlist=VARLIST,
-            mip_era='CMIP7',
-            table_name='ocean',
-            freq=None,
+            config_overrides={
+                'mip_era': 'CMIP7',
+                'table_name': 'ocean',
+                'freq': None,
+            },
         ),
     )
 
@@ -297,9 +389,11 @@ def test_cmip6_freq_none_no_derivation_raises(tmp_path):
             outdir=str(outdir),
             exp_config=str(local_exp),
             varlist=VARLIST,
-            mip_era='CMIP6',
-            table_name='FakePt',
-            freq=None,
+            config_overrides={
+                'mip_era': 'CMIP6',
+                'table_name': 'FakePt',
+                'freq': None,
+            },
         ),
     )
 
@@ -330,9 +424,11 @@ def test_cmip6_fx_table_freq_derives_static(tmp_path):
             outdir=str(outdir),
             exp_config=str(local_exp),
             varlist=VARLIST,
-            mip_era='CMIP6',
-            table_name='FakeFx',
-            freq=None,
+            config_overrides={
+                'mip_era': 'CMIP6',
+                'table_name': 'FakeFx',
+                'freq': None,
+            },
         ),
     )
 
@@ -361,9 +457,11 @@ def test_cmip6_freq_none_derivation_exception_caught(tmp_path):
             outdir=str(outdir),
             exp_config=str(local_exp),
             varlist=VARLIST,
-            mip_era='CMIP6',
-            table_name='FakeBad',
-            freq=None,
+            config_overrides={
+                'mip_era': 'CMIP6',
+                'table_name': 'FakeBad',
+                'freq': None,
+            },
         ),
     )
 
@@ -388,10 +486,12 @@ def test_gridding_dict_has_none_value_raises(tmp_path):
             outdir=str(outdir),
             exp_config=str(local_exp),
             varlist=VARLIST,
-            gridding={
-                'grid_label': GRID_LABEL,
-                'grid_desc': None,
-                'nom_res': NOM_RES,
+            config_overrides={
+                'gridding': {
+                    'grid_label': GRID_LABEL,
+                    'grid_desc': None,
+                    'nom_res': NOM_RES,
+                },
             },
         ),
     )
@@ -494,13 +594,72 @@ def test_cmip6_freq_none_derivation_succeeds(tmp_path):
             outdir=str(outdir),
             exp_config=str(local_exp),
             varlist=VARLIST,
-            mip_era='CMIP6',
-            table_name='Omon',
-            freq=None,
+            config_overrides={
+                'mip_era': 'CMIP6',
+                'table_name': 'Omon',
+                'freq': None,
+            },
         ),
     )
 
     cmor_yaml_subtool(yamlfile=yamlfile, dry_run_mode=True)
+
+
+def test_static_components_infer_static_frequency(tmp_path, caplog):
+    """An all-static target with no frequency is resolved to static."""
+    local_exp = tmp_path / 'exp.json'
+    shutil.copy(EXP_CONFIG, local_exp)
+    pp_dir = tmp_path / 'pp'
+    pp_dir.mkdir()
+    outdir = tmp_path / 'out'
+    outdir.mkdir()
+    table_dir = _write_table_json(tmp_path / 'tables', 'CMIP6', 'Omon')
+    cmor_dict = _build_cmor_dict(
+        pp_dir=str(pp_dir),
+        table_dir=table_dir,
+        outdir=str(outdir),
+        exp_config=str(local_exp),
+        varlist=VARLIST,
+        config_overrides={'freq': None, 'data_series_type': 'static'},
+    )
+    yamlfile = _write_cmor_yaml(tmp_path, cmor_dict)
+
+    with caplog.at_level(logging.INFO, logger='fremor.cmor_yamler'):
+        cmor_yaml_subtool(yamlfile=yamlfile, dry_run_mode=True)
+
+    assert 'freq = static' in caplog.text
+    assert f'{pp_dir}/{cmor_dict["table_targets"][0]["target_components"][0]["component_name"]}/' \
+           f'{cmor_dict["table_targets"][0]["target_components"][0]["component_name"]}.static.nc' \
+           in caplog.text
+
+
+def test_dry_run_notes_ps_fallback_cannot_be_passed_to_run(tmp_path, caplog):
+    """The dry-run output identifies ps_fallback as unavailable to the run CLI."""
+    local_exp = tmp_path / 'exp.json'
+    shutil.copy(EXP_CONFIG, local_exp)
+    pp_dir = tmp_path / 'pp'
+    pp_dir.mkdir()
+    outdir = tmp_path / 'out'
+    outdir.mkdir()
+    table_dir = _write_table_json(tmp_path / 'tables', 'CMIP6', 'Omon')
+    cmor_dict = _build_cmor_dict(
+        pp_dir=str(pp_dir),
+        table_dir=table_dir,
+        outdir=str(outdir),
+        exp_config=str(local_exp),
+        varlist=VARLIST,
+    )
+    component = cmor_dict['table_targets'][0]['target_components'][0]['component_name']
+    cmor_dict['table_targets'][0]['ps_component'] = component
+    yamlfile = _write_cmor_yaml(tmp_path, cmor_dict)
+
+    with caplog.at_level(logging.INFO, logger='fremor.cmor_yamler'):
+        cmor_yaml_subtool(yamlfile=yamlfile, dry_run_mode=True)
+
+    assert '--DRY RUN NOTE---' in caplog.text
+    assert 'ps_source = None' in caplog.text
+    assert 'ps_fallback =' in caplog.text
+    assert 'which fremor run has no flags for' in caplog.text
 
 
 def test_cmip6plus_uses_mip_table_prefix(tmp_path, caplog):
@@ -520,7 +679,7 @@ def test_cmip6plus_uses_mip_table_prefix(tmp_path, caplog):
             outdir=str(outdir),
             exp_config=str(local_exp),
             varlist=VARLIST,
-            mip_era='CMIP6PLUS',
+            config_overrides={'mip_era': 'CMIP6PLUS'},
         ),
     )
 

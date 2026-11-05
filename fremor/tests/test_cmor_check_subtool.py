@@ -3,51 +3,27 @@ tests for fremor.cmor_check.cmor_check_subtool
 '''
 
 import json
-import tempfile
+import logging
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import yaml
 from netCDF4 import Dataset
 
+from fremor import cmor_check as check_module
 from fremor.cmor_check import cmor_check_subtool
-
-
-@pytest.fixture
-def temp_dir():
-    ''' fixture yielding a temporary directory '''
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
-
-
-def _write_table(tables_dir, table_name, var_names):
-    variable_entry = {name: {'standard_name': name} for name in var_names}
-    (Path(tables_dir) / f'CMIP6_{table_name}.json').write_text(
-        json.dumps({'Header': {'table_id': f'Table {table_name}'}, 'variable_entry': variable_entry}),
-        encoding='utf-8'
-    )
+from fremor.tests._cmor_test_helpers import (
+    component_entry as _component_entry,
+    minimal_cmor_yaml_doc,
+    table_target as _table_target,
+    write_table as _write_table,
+)
 
 
 def _write_amon_table(tables_dir, var_names):
     _write_table(tables_dir, 'Amon', var_names)
-
-
-def _component_entry(component_name, variable_list_path, chunk='P5Y'):
-    return {
-        'component_name': component_name,
-        'variable_list': str(variable_list_path),
-        'data_series_type': 'ts',
-        'chunk': chunk,
-    }
-
-
-def _table_target(table_name, components, freq='monthly'):
-    return {
-        'table_name': table_name,
-        'freq': freq,
-        'gridding': {'grid_label': 'gn', 'grid_desc': 'd', 'nom_res': '100 km'},
-        'target_components': components,
-    }
 
 
 def _write_yaml(temp_dir, table_targets, mip_era='cmip6', pp_dir=None, table_dir=None): # pylint: disable=redefined-outer-name
@@ -57,25 +33,183 @@ def _write_yaml(temp_dir, table_targets, mip_era='cmip6', pp_dir=None, table_dir
     pp_dir.mkdir(parents=True, exist_ok=True)
     table_dir = Path(table_dir) if table_dir else temp_root / 'tables'
     table_dir.mkdir(parents=True, exist_ok=True)
-
-    doc = {
-        'cmor': {
-            'start': None,
-            'stop': None,
-            'calendar_type': 'noleap',
-            'mip_era': mip_era,
-            'exp_json': str(temp_root / 'exp.json'),
-            'directories': {
-                'pp_dir': str(pp_dir),
-                'table_dir': str(table_dir),
-                'outdir': str(temp_root / 'out'),
-            },
-            'table_targets': table_targets,
-        }
-    }
+    doc = minimal_cmor_yaml_doc(temp_root, pp_dir, table_dir, table_targets, mip_era)
     yamlfile = temp_root / 'cmor.yaml'
     yamlfile.write_text(yaml.safe_dump(doc), encoding='utf-8')
     return str(yamlfile)
+
+
+def test_check_filename_and_input_directory_helpers(tmp_path):
+    ''' malformed time-series names are tolerated, and a missing frequency has no input dir '''
+    component = _component_entry('atmos', tmp_path / 'varlist.json')
+    assert check_module._component_input_dir(str(tmp_path), {'freq': None}, component) is None
+
+    malformed = Path('atmos.not-a-range.tas.nc')
+    no_range = Path('no-date.nc')
+    assert check_module._in_run_bounds(malformed, 2000, 2010)
+    assert check_module._date_range_from_filename(no_range) is None
+    assert check_module._date_range_from_filename(malformed) is None
+    assert check_module._time_coverage([no_range])['status'] == 'unknown'
+    assert check_module._output_date_range_from_filename(no_range) is None
+
+
+def test_dmls_helpers_fall_back_when_binary_is_unavailable(tmp_path, monkeypatch):
+    ''' empty batches and missing dmls executables use the documented fallback '''
+    path = tmp_path / 'input.nc'
+    missing_dmls = str(tmp_path / 'missing-dmls')
+
+    assert check_module._dmls_offline_files([], dmls_bin=missing_dmls) is None
+    assert check_module._dmls_offline_files([path], dmls_bin=missing_dmls) is None
+    assert check_module._dmls_state_for_file(path, dmls_bin=missing_dmls) is None
+    monkeypatch.setattr(check_module.shutil, 'which', lambda _binary: None)
+    assert check_module._dmls_state_for_file(path) is None
+    assert not check_module._is_file_staged(path)
+    path.touch()
+    assert check_module._is_file_staged(path)
+
+
+def test_staging_status_reports_partially_staged_files(tmp_path, monkeypatch):
+    ''' an offline result for only one of two files is reported as partially staged '''
+    files = [tmp_path / 'atmos.199001-199412.tas.nc',
+             tmp_path / 'atmos.199501-199912.tas.nc']
+    for path in files:
+        path.touch()
+    monkeypatch.setattr(check_module, '_dmls_offline_files',
+                        lambda paths, dmls_bin=None: {str(files[0])})
+
+    result = check_module._staging_status(files, dmls_bin='unused')
+
+    assert result['status'] == 'partially_staged'
+    assert result['unstaged_files'] == [str(files[0])]
+
+
+def test_scalar_vertical_token_recognizes_only_scalar_z_coordinates(tmp_path):
+    ''' a scalar Z coordinate maps through MIP tokens, while absent matches return None '''
+    nc_path = tmp_path / 'scalar_z.nc'
+    with Dataset(nc_path, 'w') as ds:
+        ds.createDimension('time', 1)
+        time = ds.createVariable('time', 'f8', ('time',))
+        time.axis = 'T'
+        scalar_z = ds.createVariable('height', 'f4', ())
+        scalar_z.axis = 'Z'
+        variable = ds.createVariable('tas', 'f4', ('time',))
+        variable.coordinates = 'height'
+        without_scalar_z = ds.createVariable('tas_timecoord', 'f4', ('time',))
+        without_scalar_z.coordinates = 'time'
+
+    with Dataset(nc_path) as ds:
+        assert check_module._scalar_vertical_token(ds, 'tas', ['height2m']) == 'height2m'
+        assert check_module._scalar_vertical_token(ds, 'tas', ['unknown']) is None
+        assert check_module._scalar_vertical_token(ds, 'tas_timecoord', ['height2m']) is None
+
+
+def test_inspection_helpers_report_corrupt_input(tmp_path):
+    ''' corrupt NetCDF inputs yield unknown vertical, attribute, and range results '''
+    corrupt = tmp_path / 'atmos.199001-199412.tas.nc'
+    corrupt.write_bytes(b'not a NetCDF file' * 1000)
+    bounds = {'valid_min': 0.0, 'valid_max': None,
+              'ok_min_mean_abs': None, 'ok_max_mean_abs': None}
+
+    assert check_module._input_vertical_token(str(corrupt), 'tas') is check_module._INSPECTION_ERROR
+    assert check_module._attrs_finding([], [], [corrupt])['status'] == 'unknown'
+    assert check_module._range_finding(bounds, [corrupt])['status'] == 'unknown'
+
+
+def test_range_helpers_handle_invalid_bounds_and_missing_data(tmp_path):
+    ''' invalid table bounds are ignored and all-masked input has unknown range '''
+    table_data = {'variable_entry': {'tas': {'valid_min': 'not-a-number'}}}
+    bounds = check_module._mip_variable_range_bounds(table_data, 'tas', 'CMIP6')
+    assert bounds['valid_min'] is None
+
+    nc_path = tmp_path / 'atmos.199001-199412.tas.nc'
+    with Dataset(nc_path, 'w') as ds:
+        ds.createDimension('x', 2)
+        variable = ds.createVariable('tas', 'f4', ('x',), fill_value=-999.0)
+        variable[:] = np.ma.masked_all(2)
+
+    finding = check_module._range_finding(
+        {'valid_min': 0.0, 'valid_max': None, 'ok_min_mean_abs': None, 'ok_max_mean_abs': None},
+        [nc_path],
+    )
+    assert finding['status'] == 'unknown'
+    assert 'all values' in finding['reason']
+
+
+def test_range_finding_reports_all_out_of_range_bounds(tmp_path):
+    ''' every declared min/max and mean-absolute bound is checked '''
+    nc_path = tmp_path / 'atmos.199001-199412.tas.nc'
+    with Dataset(nc_path, 'w') as ds:
+        ds.createDimension('x', 2)
+        variable = ds.createVariable('tas', 'f4', ('x',))
+        variable[:] = [-2.0, 4.0]
+
+    finding = check_module._range_finding(
+        {'valid_min': 0.0, 'valid_max': 3.0, 'ok_min_mean_abs': 3.5, 'ok_max_mean_abs': 2.5},
+        [nc_path],
+    )
+
+    assert finding['status'] == 'out_of_range'
+    assert len(finding['problems']) == 4
+
+
+def test_cmip7_brand_helpers_handle_unique_missing_and_unreadable_sources(tmp_path):
+    ''' unique brands need no input, absent components resolve to None, corrupt input is skipped '''
+    single_brand_table = {'variable_entry': {'tas_tavg-u-hxy-u': {}}}
+    assert check_module._source_brand(
+        single_brand_table, 'tas', ('atmos', 'tas'), None, str(tmp_path),
+        {'target_components': []}, None, None, None, {},
+    ) == 'tavg-u-hxy-u'
+
+    multi_brand_table = {'variable_entry': {
+        'tas_tavg-u-hxy-u': {},
+        'tas_tavg-u-hxy-air': {},
+    }}
+    assert check_module._source_brand(
+        multi_brand_table, 'tas', ('missing', 'tas'), None, str(tmp_path),
+        {'target_components': []}, None, None, None, {},
+    ) is None
+
+    input_dir = tmp_path / 'atmos' / 'ts' / 'monthly' / '5yr'
+    input_dir.mkdir(parents=True)
+    corrupt = input_dir / 'atmos.199001-199412.tas.nc'
+    corrupt.write_bytes(b'not a NetCDF file' * 1000)
+    assert check_module._input_dir_brand(
+        input_dir, 'tas', 'tas', multi_brand_table, None, None, None,
+        str(tmp_path / 'missing-dmls'),
+    ) is None
+
+
+def test_check_report_prints_exp_config_unmapped_and_invalid_sections(capsys):
+    ''' human-readable output includes experiment findings and requested detail lists '''
+    report = {
+        '_exp_config': {
+            'status': 'warning',
+            'file': 'exp.json',
+            'cv': 'CMIP6_CV.json',
+            'findings': [{'level': 'warning', 'attribute': 'calendar', 'message': 'review calendar'}],
+        },
+        'Amon': {
+            'reference_var_count': 1,
+            'unmapped': ['tas'],
+            'multiply_mapped': {},
+            'unknown_mapped': [],
+            'invalid_entries': [{
+                'component': 'atmos', 'local_key': 'bad', 'error': 'malformed mapping',
+            }],
+            'files': {},
+        },
+    }
+
+    check_module._print_report(report, show_unmapped=True)
+
+    output = capsys.readouterr().out
+    assert '[EXPERIMENT CONFIG]' in output
+    assert '- tas' in output
+    assert 'atmos:bad: malformed mapping' in output
+    assert 'no one-to-one-mapped or multi-brand variables to check' in output
+    assert check_module._coverage_finding({'status': 'unknown'}, None) == (
+        'coverage=unknown (no parseable date range in filenames)'
+    )
 
 
 def test_cmor_check_subtool_yamlfile_dne_err(temp_dir): # pylint: disable=redefined-outer-name
@@ -211,12 +345,14 @@ def test_cmor_check_subtool_reports_fully_unmapped_table(temp_dir): # pylint: di
     yamlfile = _write_yaml(temp_dir, [
         _table_target('Amon', [_component_entry('atmos', missing_list)])
     ], table_dir=tables_dir)
+    output_report = temp_root / 'check-report.json'
 
-    report = cmor_check_subtool(yamlfile=yamlfile)
+    report = cmor_check_subtool(yamlfile=yamlfile, output_report=str(output_report))
 
     assert report['Amon']['unmapped'] == ['pr', 'tas']
     assert report['Amon']['multiply_mapped'] == {}
     assert report['Amon']['unknown_mapped'] == []
+    assert json.loads(output_report.read_text(encoding='utf-8')) == report
 
 
 def test_cmor_check_subtool_show_mapped(temp_dir): # pylint: disable=redefined-outer-name
@@ -324,10 +460,10 @@ def test_cmor_check_subtool_all_disabled_returns_empty_report(temp_dir): # pylin
     disabled_amon['disabled'] = True
     yamlfile = _write_yaml(temp_dir, [disabled_amon], table_dir=tables_dir)
 
-    assert cmor_check_subtool(yamlfile=yamlfile, table_patterns=['Amon']) == {}
+    assert not cmor_check_subtool(yamlfile=yamlfile, table_patterns=['Amon'])
 
 
-def test_cmor_check_subtool_reports_startup_progress(temp_dir, capsys): # pylint: disable=redefined-outer-name
+def test_cmor_check_subtool_reports_startup_progress(temp_dir, capsys, caplog): # pylint: disable=redefined-outer-name
     ''' progress is written to stderr from configuration load through per-table completion,
     keeping stdout available for the report (especially valid --json output) '''
     temp_root = Path(temp_dir)
@@ -342,14 +478,15 @@ def test_cmor_check_subtool_reports_startup_progress(temp_dir, capsys): # pylint
         _table_target('Amon', [_component_entry('atmos', varlist_path)])
     ], table_dir=tables_dir)
 
-    cmor_check_subtool(yamlfile=yamlfile, json_output=True)
+    with caplog.at_level( logging.INFO, logger='fremor.cmor_check'):
+        cmor_check_subtool(yamlfile=yamlfile, json_output=True)
 
-    captured = capsys.readouterr()
-    assert json.loads(captured.out)['Amon']['reference_var_count'] == 1
-    assert 'loading configuration' in captured.err
-    assert 'checking table 1/1 (Amon)' in captured.err
-    assert 'finished Amon in' in captured.err
-    assert 'complete in' in captured.err
+    captured = caplog.messages
+    assert json.loads(capsys.readouterr().out)['Amon']['reference_var_count'] == 1
+    assert 'loading configuration' in captured[0]
+    assert 'checking table 1/1 (Amon)' in captured[2]
+    assert 'finished Amon in' in captured[3]
+    assert 'complete in' in captured[4]
 
 
 def test_cmor_check_subtool_table_patterns_no_match_err(temp_dir): # pylint: disable=redefined-outer-name
@@ -585,17 +722,16 @@ def test_cmor_check_subtool_coverage_missing_files(temp_dir): # pylint: disable=
 
 def test_cmor_check_subtool_staging_dmls_offline(temp_dir, monkeypatch, capsys): # pylint: disable=redefined-outer-name
     ''' check_staging: when a dmls binary is available, its (OFL) tag marks a file unstaged '''
-    temp_root = Path(temp_dir)
-    tables_dir = temp_root / 'tables'
+    tables_dir = Path(temp_dir) / 'tables'
     tables_dir.mkdir()
     _write_amon_table(tables_dir, ['tas'])
 
-    varlist_dir = temp_root / 'varlists'
+    varlist_dir = Path(temp_dir) / 'varlists'
     varlist_dir.mkdir()
     atmos_list = varlist_dir / 'CMIP6_Amon_atmos.list'
     atmos_list.write_text(json.dumps({'tas': 'tas'}), encoding='utf-8')
 
-    pp_dir = temp_root / 'pp'
+    pp_dir = Path(temp_dir) / 'pp'
     yamlfile = _write_yaml(temp_dir, [
         _table_target('Amon', [_component_entry('atmos', atmos_list)])
     ], table_dir=tables_dir, pp_dir=pp_dir)
@@ -606,12 +742,13 @@ def test_cmor_check_subtool_staging_dmls_offline(temp_dir, monkeypatch, capsys):
 
     import subprocess as subprocess_mod # pylint: disable=import-outside-toplevel
 
-    class _FakeResult:
-        stdout = f'-rw-r--r-- 1 user group 123 Jan 1 12:00 (OFL) {nc_path}\n'
+    fake_result = SimpleNamespace(
+        stdout=f'-rw-r--r-- 1 user group 123 Jan 1 12:00 (OFL) {nc_path}\n',
+    )
 
     def _fake_run(cmd, **kwargs): # pylint: disable=unused-argument
         assert cmd[0] == 'dmls'
-        return _FakeResult()
+        return fake_result
 
     monkeypatch.setattr(subprocess_mod, 'run', _fake_run)
 
@@ -925,10 +1062,13 @@ def test_cmor_check_subtool_no_files_key_by_default(temp_dir): # pylint: disable
 
 # ── check_output ─────────────────────────────────────────────────────────
 
-def _write_cmor_output(outdir, var, table_name, date_range, source_id='PCMDI-test',
-                       experiment_id='piControl', variant_label='r1i1p1f1', grid_label='gn'):
+def _write_cmor_output(outdir, var, table_name, date_range):
     ''' touch a fake CMOR output file nested a few levels deep under outdir, named the way
     CMOR actually names CMIP6/CMIP6Plus output (variable_id first, table second) '''
+    source_id = 'PCMDI-test'
+    experiment_id = 'piControl'
+    variant_label = 'r1i1p1f1'
+    grid_label = 'gn'
     nested = Path(outdir) / table_name / var / grid_label / 'v20260101'
     nested.mkdir(parents=True, exist_ok=True)
     filename = f'{var}_{table_name}_{source_id}_{experiment_id}_{variant_label}_{grid_label}_{date_range}.nc'
@@ -1093,6 +1233,26 @@ def _write_input_nc_with_attrs(nc_path, local_var, units=None, cell_methods=None
             var.cell_methods = cell_methods
         if values is not None:
             var[:] = values
+
+
+def _prepare_offline_range_check(root):
+    tables_dir = Path(root) / 'tables'
+    tables_dir.mkdir()
+    _write_table_with_attrs(tables_dir, 'Amon', {'tas': {'valid_min': '150', 'valid_max': '350'}})
+
+    varlist_dir = Path(root) / 'varlists'
+    varlist_dir.mkdir()
+    atmos_list = varlist_dir / 'CMIP6_Amon_atmos.list'
+    atmos_list.write_text(json.dumps({'tas': 'tas'}), encoding='utf-8')
+
+    pp_dir = Path(root) / 'pp'
+    yamlfile = _write_yaml(root, [
+        _table_target('Amon', [_component_entry('atmos', atmos_list)])
+    ], table_dir=tables_dir, pp_dir=pp_dir)
+
+    nc_path = _input_dir(pp_dir, 'atmos') / 'atmos.197901-198312.tas.nc'
+    _write_input_nc_with_attrs(nc_path, 'tas', values=[270.0, 271.0])
+    return yamlfile, nc_path
 
 
 def test_cmor_check_subtool_attrs_ok(temp_dir, capsys): # pylint: disable=redefined-outer-name
@@ -1293,29 +1453,13 @@ def test_cmor_check_subtool_range_no_bounds_declared(temp_dir): # pylint: disabl
 def test_cmor_check_subtool_range_skips_offline_file(temp_dir, monkeypatch, capsys): # pylint: disable=redefined-outer-name
     ''' check_range: a representative file reported offline by dmls is skipped rather than
     having its data read (which would trigger a tape retrieval) '''
-    temp_root = Path(temp_dir)
-    tables_dir = temp_root / 'tables'
-    tables_dir.mkdir()
-    _write_table_with_attrs(tables_dir, 'Amon', {'tas': {'valid_min': '150', 'valid_max': '350'}})
-
-    varlist_dir = temp_root / 'varlists'
-    varlist_dir.mkdir()
-    atmos_list = varlist_dir / 'CMIP6_Amon_atmos.list'
-    atmos_list.write_text(json.dumps({'tas': 'tas'}), encoding='utf-8')
-
-    pp_dir = temp_root / 'pp'
-    yamlfile = _write_yaml(temp_dir, [
-        _table_target('Amon', [_component_entry('atmos', atmos_list)])
-    ], table_dir=tables_dir, pp_dir=pp_dir)
-
-    comp_dir = _input_dir(pp_dir, 'atmos')
-    nc_path = comp_dir / 'atmos.197901-198312.tas.nc'
-    _write_input_nc_with_attrs(nc_path, 'tas', values=[270.0, 271.0])
+    yamlfile, nc_path = _prepare_offline_range_check(temp_dir)
 
     import subprocess as subprocess_mod # pylint: disable=import-outside-toplevel
 
-    class _FakeResult:
-        stdout = f'-rw-r--r-- 1 user group 123 Jan 1 12:00 (OFL) {nc_path}\n'
+    fake_result = SimpleNamespace(
+        stdout=f'-rw-r--r-- 1 user group 123 Jan 1 12:00 (OFL) {nc_path}\n',
+    )
 
     read_attempts = []
     real_dataset_init = Dataset.__init__
@@ -1326,7 +1470,7 @@ def test_cmor_check_subtool_range_skips_offline_file(temp_dir, monkeypatch, caps
 
     def _fake_run(cmd, **kwargs): # pylint: disable=unused-argument
         assert cmd[0] == 'dmls'
-        return _FakeResult()
+        return fake_result
 
     monkeypatch.setattr(subprocess_mod, 'run', _fake_run)
     monkeypatch.setattr(Dataset, '__init__', _tracking_init)

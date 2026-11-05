@@ -30,6 +30,7 @@ from typing import Optional
 
 import yaml
 
+from ._version import __version__
 from .cmor_finder import make_simple_varlist, make_static_varlist
 from .cmor_constants import EXCLUDED_TABLE_SUFFIXES, STATIC_DATA_SERIES_TYPE, STATIC_FREQ
 from .cmor_helpers import static_file_path
@@ -319,6 +320,7 @@ def cmor_config_subtool(
     # ---- build YAML lines ----
     lines = [
         '',
+        f'fremor_version: {__version__}',
         'cmor:',
         '  start: null',
         '  stop: null',
@@ -376,7 +378,7 @@ def cmor_config_subtool(
                         output_variable_list=variable_list,
                         json_mip_table=mip_table
                     )
-                except Exception as exc: # pylint: disable=broad-exception-caught
+                except Exception as exc:
                     fre_logger.warning(
                         'variable list creation failed for %s %s %s \nWith exception: %s',
                         static_file, variable_list, mip_table, exc
@@ -414,7 +416,7 @@ def cmor_config_subtool(
                     check_freq=check_freq
                 )
 
-            except Exception as exc:
+            except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
                 fre_logger.warning(
                     'variable list creation failed for %s %s %s \nWith exception: %s',
                     dir_targ, variable_list, mip_table, exc

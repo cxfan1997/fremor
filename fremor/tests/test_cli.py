@@ -27,6 +27,7 @@ from click.testing import CliRunner
 import pytest
 import yaml
 
+from fremor import __version__
 from fremor.cli import fremor
 
 from .conftest import (
@@ -126,7 +127,7 @@ def test_cli_fremor_ddebug_logfile(mock_subtool, tmp_path):
     dummy_yaml = tmp_path / 'cmor.yaml'
     dummy_yaml.write_text('placeholder', encoding='utf-8')
 
-    def _emit_ddebug(*args, **kwargs):
+    def _emit_ddebug(*_args, **_kwargs):
         logging.getLogger('fremor.cli').ddebug('deep debug enabled')
 
     mock_subtool.side_effect = _emit_ddebug
@@ -480,6 +481,40 @@ def test_cli_fremor_run_case1(cli_sos_nc_file, tmp_path):
     assert Path(cli_sos_nc_file).exists(), 'input file should still exist'
 
 
+def test_cli_fremor_run_opt_var_name_without_varlist(cli_sos_nc_file, tmp_path):
+    """A single variable can be run without a separate variable-list file."""
+    outdir = str(tmp_path / 'outdir')
+
+    result = runner.invoke(fremor, args=[
+        'run', '--run_one',
+        '--indir', str(INDIR),
+        '--table_config', str(CMIP6_TABLE_CONFIG),
+        '--exp_config', str(EXP_CONFIG),
+        '--outdir', outdir,
+        '--opt_var_name', 'sos',
+        '--calendar', 'julian',
+        '--grid_label', 'gr',
+        '--grid_desc', 'FOO_BAR_PLACEHOLD',
+        '--nom_res', '10000 km',
+    ])
+    assert result.exit_code == 0, f'run without varlist failed: {result.output}'
+    assert list(Path(outdir).rglob('sos_Omon_*.nc')), 'no output sos file found'
+    assert Path(cli_sos_nc_file).exists(), 'input file should still exist'
+
+
+def test_cli_fremor_run_requires_varlist_or_opt_var_name(tmp_path):
+    """At least one of --varlist and --opt-var-name must be provided."""
+    result = runner.invoke(fremor, args=[
+        'run',
+        '--indir', str(INDIR),
+        '--table_config', str(CMIP6_TABLE_CONFIG),
+        '--exp_config', str(EXP_CONFIG),
+        '--outdir', str(tmp_path / 'outdir'),
+    ])
+    assert result.exit_code == 2
+    assert 'either --varlist or --opt-var-name must be provided' in result.output
+
+
 def test_cli_fremor_run_case2(tmp_path):
     """
     fremor run, test error case: filename variable != file variable (CMIP6).
@@ -720,6 +755,7 @@ def test_cli_fremor_config_case1(cli_sos_nc_file): # pylint: disable=redefined-o
     assert 'cmor:' in yaml_text
     assert 'table_targets:' in yaml_text
     loaded_yaml = yaml.safe_load(yaml_text)
+    assert loaded_yaml['fremor_version'] == __version__
     assert loaded_yaml['cmor']['start'] is None
     assert loaded_yaml['cmor']['stop'] is None
     assert loaded_yaml['cmor']['table_targets'][0]['gridding']['grid_label'] == 'gn'
@@ -926,114 +962,103 @@ def test_cli_fremor_init_cmip6plus_exp_config(tmp_path):
     assert 'output_path_template' in config
 
 
-def test_cli_fremor_init_cmip6_default_name(tmp_path):
+def test_cli_fremor_init_cmip6_default_name(tmp_path, monkeypatch):
     """
     fremor init -- when no --exp_config is given and no --tables_dir,
     a default-named file should be created in the current directory.
     """
-    # Use CliRunner's isolated_filesystem to avoid polluting the actual working directory
-    with runner.isolated_filesystem(temp_dir=tmp_path):
-        result = runner.invoke(fremor, args=[
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(fremor, args=[
+        'init',
+        '--mip_era', 'cmip6'
+    ])
+    assert result.exit_code == 0, f'init failed: {result.output}'
+
+    default_path = Path('CMOR_cmip6_template.json')
+    assert default_path.exists(), 'default output config was not created'
+
+    with open(default_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    assert config['mip_era'] == 'CMIP6'
+
+
+def test_cli_fremor_init_cmip6plus_default_name(tmp_path, monkeypatch):
+    """
+    fremor init -- when no --exp_config is given and no --tables_dir,
+    a default-named file should be created in the current directory.
+    """
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(fremor, args=[
+        'init',
+        '--mip_era', 'cmip6plus'
+    ])
+    assert result.exit_code == 0, f'init failed: {result.output}'
+
+    default_path = Path('CMOR_cmip6plus_template.json')
+    assert default_path.exists(), 'default output config was not created'
+
+    with open(default_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    assert config['mip_era'] == 'CMIP6Plus'
+
+
+
+def test_cli_fremor_init_cmip7_default_name(tmp_path, monkeypatch):
+    """
+    fremor init -- when no --exp_config is given and no --tables_dir,
+    a default-named file should be created in the current directory.
+    """
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(fremor, args=[
+        'init',
+        '--mip_era', 'cmip7'
+    ])
+    assert result.exit_code == 0, f'init failed: {result.output}'
+
+    default_path = Path('CMOR_cmip7_template.json')
+    assert default_path.exists(), 'default output config was not created'
+
+    with open(default_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    assert config['mip_era'] == 'CMIP7'
+
+
+def test_cli_fremor_init_exp_config_and_tables_dir_have_consistent_layout(tmp_path):
+    """Real init runs create the same table layout with tarball and git retrieval."""
+    relative_table_paths = []
+
+    for mode, fast in [('tarball', True), ('git', False)]:
+        run_dir = tmp_path / mode
+        exp_config = run_dir / 'experiment.json'
+        tables_dir = run_dir / 'tables'
+        args = [
             'init',
-            '--mip_era', 'cmip6'
-        ])
-        assert result.exit_code == 0, f'init failed: {result.output}'
+            '--mip_era', 'cmip6',
+            '--exp_config', str(exp_config),
+            '--tables_dir', str(tables_dir),
+        ]
+        if fast:
+            args.append('--fast')
 
-        default_path = Path('CMOR_cmip6_template.json')
-        assert default_path.exists(), 'default output config was not created'
+        result = runner.invoke(fremor, args=args)
+        assert result.exit_code == 0, f'{mode} init failed: {result.output}'
 
-        with open(default_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
+        assert exp_config.is_file(), f'{mode} init did not write the experiment config'
+        with open(exp_config, encoding='utf-8') as config_file:
+            config = json.load(config_file)
         assert config['mip_era'] == 'CMIP6'
 
-def test_cli_fremor_init_cmip6plus_default_name(tmp_path):
-    """
-    fremor init -- when no --exp_config is given and no --tables_dir,
-    a default-named file should be created in the current directory.
-    """
-    # Use CliRunner's isolated_filesystem to avoid polluting the actual working directory
-    with runner.isolated_filesystem(temp_dir=tmp_path):
-        result = runner.invoke(fremor, args=[
-            'init',
-            '--mip_era', 'cmip6plus'
-        ])
-        assert result.exit_code == 0, f'init failed: {result.output}'
+        repo_dir = tables_dir / 'cmip6-cmor-tables-main'
+        assert repo_dir.is_dir(), f'{mode} init did not create the repository directory'
+        assert (repo_dir / '.git').is_dir() == (not fast)
 
-        default_path = Path('CMOR_cmip6plus_template.json')
-        assert default_path.exists(), 'default output config was not created'
+        table_file = repo_dir / 'Tables' / 'CMIP6_Omon.json'
+        assert table_file.is_file(), f'{mode} init did not fetch the Omon table'
+        with open(table_file, encoding='utf-8') as table_stream:
+            assert 'variable_entry' in json.load(table_stream)
+        relative_table_paths.append(table_file.relative_to(tables_dir))
 
-        with open(default_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        assert config['mip_era'] == 'CMIP6Plus'
-
-
-
-def test_cli_fremor_init_cmip7_default_name(tmp_path):
-    """
-    fremor init -- when no --exp_config is given and no --tables_dir,
-    a default-named file should be created in the current directory.
-    """
-    # Use CliRunner's isolated_filesystem to avoid polluting the actual working directory
-    with runner.isolated_filesystem(temp_dir=tmp_path):
-        result = runner.invoke(fremor, args=[
-            'init',
-            '--mip_era', 'cmip7'
-        ])
-        assert result.exit_code == 0, f'init failed: {result.output}'
-
-        default_path = Path('CMOR_cmip7_template.json')
-        assert default_path.exists(), 'default output config was not created'
-
-        with open(default_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        assert config['mip_era'] == 'CMIP7'
-
-
-@patch('fremor.cli.cmor_init_subtool')
-def test_cli_fremor_init_exp_config_and_tables_dir_fast(mock_subtool, tmp_path):
-    """The init CLI forwards both --exp_config and --tables_dir for curl-based retrieval."""
-    exp_config = tmp_path / 'experiment.json'
-    tables_dir = tmp_path / 'tables'
-
-    result = runner.invoke(fremor, args=[
-        'init',
-        '--mip_era', 'cmip6',
-        '--exp_config', str(exp_config),
-        '--tables_dir', str(tables_dir),
-        '--fast',
-    ])
-
-    assert result.exit_code == 0
-    mock_subtool.assert_called_once_with(
-        mip_era='cmip6',
-        exp_config=str(exp_config),
-        tables_dir=str(tables_dir),
-        tag=None,
-        fast=True,
-    )
-
-
-@patch('fremor.cli.cmor_init_subtool')
-def test_cli_fremor_init_exp_config_and_tables_dir_git(mock_subtool, tmp_path):
-    """The init CLI forwards both --exp_config and --tables_dir for git-based retrieval."""
-    exp_config = tmp_path / 'experiment.json'
-    tables_dir = tmp_path / 'tables'
-
-    result = runner.invoke(fremor, args=[
-        'init',
-        '--mip_era', 'cmip7',
-        '--exp_config', str(exp_config),
-        '--tables_dir', str(tables_dir),
-    ])
-
-    assert result.exit_code == 0
-    mock_subtool.assert_called_once_with(
-        mip_era='cmip7',
-        exp_config=str(exp_config),
-        tables_dir=str(tables_dir),
-        tag=None,
-        fast=False,
-    )
+    assert relative_table_paths[0] == relative_table_paths[1]
 
 
 
@@ -1143,8 +1168,8 @@ def test_cli_fremor_yaml_misplaced_global_verbose_flag():
     # Test with a short flag (-v) on the yaml subcommand
     result_v = runner.invoke(fremor, args=['yaml', '-v'])
     assert result_v.exit_code == 2
-    assert "Error: The '-v' flag is in the wrong spot." in result_v.output
-    assert "Global flags must be placed before the command (e.g., `fremor -v yaml`)." in result_v.output
+    assert 'Error: The "-v" flag is in the wrong spot.' in result_v.output
+    assert 'Global flags must be placed before the command (e.g., `fremor -v yaml`).' in result_v.output
 
 
 def test_cli_fremor_run_misplaced_global_quiet_flag():
@@ -1157,8 +1182,8 @@ def test_cli_fremor_run_misplaced_global_quiet_flag():
     # Test with a long flag (--quiet) on the run subcommand
     result_q = runner.invoke(fremor, args=['run', '--quiet'])
     assert result_q.exit_code == 2
-    assert "Error: The '--quiet' flag is in the wrong spot." in result_q.output
-    assert "Global flags must be placed before the command (e.g., `fremor --quiet run`)." in result_q.output
+    assert 'Error: The "--quiet" flag is in the wrong spot.' in result_q.output
+    assert 'Global flags must be placed before the command (e.g., `fremor --quiet run`).' in result_q.output
 
 def test_cli_fremor_genuinely_unknown_flag():
     """
@@ -1172,7 +1197,7 @@ def test_cli_fremor_genuinely_unknown_flag():
     assert result.exit_code == 2
 
     # Ensure our custom message was bypassed
-    assert "is in the wrong spot" not in result.output
+    assert 'is in the wrong spot' not in result.output
 
     # Ensure the standard click exception was re-raised and handled
-    assert "Error: No such option '--made-up-flag'" in result.output
+    assert 'Error: No such option \'--made-up-flag\'' in result.output

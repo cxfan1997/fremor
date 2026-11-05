@@ -12,8 +12,9 @@ This module powers the ``fremor init`` command, providing two key capabilities:
 2. **MIP table retrieval** – fetches the official MIP tables from trusted
    GitHub repositories. By default tables are fetched via ``git clone``
    (shallow, depth 1); with ``--fast`` they are fetched as a tarball via
-   ``curl`` and extracted in-place. CMIP6Plus additionally gets its controlled
-   vocabulary, which lives in a different repository than its tables.
+   ``curl``. Both methods place the repository tree under a ``<repo>-<ref>``
+   directory in the requested output directory. CMIP6Plus additionally gets
+   its controlled vocabulary, which lives in a different repository than its tables.
 
 Trusted sources
 ---------------
@@ -89,7 +90,20 @@ def _cmip6_exp_config_template():
         'grid': '',
         'grid_label': '',
         'nominal_resolution': '',
-        'license': 'CMIP6 model data produced by Lawrence Livermore NOAA-GFDL is licensed under a Creative Commons Attribution 4.0 International License (https://creativecommons.org/licenses/by/4.0/). Consult https://pcmdi.llnl.gov/CMIP6/TermsOfUse for terms of use governing CMIP6 output, including citation requirements and proper acknowledgment. Further information about this data, including some limitations, can be found via the further_info_url (recorded as a global attribute in this file) and at https:///pcmdi.llnl.gov/. The data producers and data providers make no warranty, either express or implied, including, but not limited to, warranties of merchantability and fitness for a particular purpose. All liabilities arising from the supply of the information (including any liability arising in negligence) are excluded to the fullest extent permitted by law.', # pylint: disable=line-too-long
+        'license': (
+            'CMIP6 model data produced by Lawrence Livermore NOAA-GFDL is licensed under a '
+            'Creative Commons Attribution 4.0 International License '
+            '(https://creativecommons.org/licenses/by/4.0/). Consult '
+            'https://pcmdi.llnl.gov/CMIP6/TermsOfUse for terms of use governing CMIP6 output, '
+            'including citation requirements and proper acknowledgment. Further information '
+            'about this data, including some limitations, can be found via the further_info_url '
+            '(recorded as a global attribute in this file) and at https:///pcmdi.llnl.gov/. '
+            'The data producers and data providers make no warranty, either express or implied, '
+            'including, but not limited to, warranties of merchantability and fitness for a '
+            'particular purpose. All liabilities arising from the supply of the information '
+            '(including any liability arising in negligence) are excluded to the fullest extent '
+            'permitted by law.'
+        ),
         # keep this relative. fremor chdir's into <outdir>/CMOR_tmp/ before running CMOR and
         # recovers the final destination by stripping '/CMOR_tmp/' from the path cmor.close()
         # returns, so an absolute outpath escapes that relocation and --outdir is ignored.
@@ -160,7 +174,16 @@ def _cmip6plus_exp_config_template():
         'grid': '',
         'grid_label': '',
         'nominal_resolution': '',
-        'license': 'CMIP6Plus model data produced by NOAA-GFDL is licensed under a Creative Commons Attribution 4.0 International License (https://creativecommons.org/licenses/by/4.0/). Consult https://pcmdi.llnl.gov/CMIP6Plus/TermsOfUse for terms of use governing CMIP6Plus output, including citation requirements and proper acknowledgment. The data producers and data providers make no warranty, either express or implied, including, but not limited to, warranties of merchantability and fitness for a particular purpose. All liabilities arising from the supply of the information (including any liability arising in negligence) are excluded to the fullest extent permitted by law.', # pylint: disable=line-too-long
+        'license': (
+            'CMIP6Plus model data produced by NOAA-GFDL is licensed under a Creative Commons '
+            'Attribution 4.0 International License (https://creativecommons.org/licenses/by/4.0/). '
+            'Consult https://pcmdi.llnl.gov/CMIP6Plus/TermsOfUse for terms of use governing '
+            'CMIP6Plus output, including citation requirements and proper acknowledgment. The data '
+            'producers and data providers make no warranty, either express or implied, including, '
+            'but not limited to, warranties of merchantability and fitness for a particular '
+            'purpose. All liabilities arising from the supply of the information (including any '
+            'liability arising in negligence) are excluded to the fullest extent permitted by law.'
+        ),
         # keep this relative. fremor chdir's into <outdir>/CMOR_tmp/ before running CMOR and
         # recovers the final destination by stripping '/CMOR_tmp/' from the path cmor.close()
         # returns, so an absolute outpath escapes that relocation and --outdir is ignored.
@@ -207,7 +230,17 @@ def _cmip7_exp_config_template():
         '#note': ' **** CMIP7 experiment configuration template – fill in values below ****',
         'contact': 'MIP participant mipmember@foobar.c.om',
         'comment': 'additional important information not fitting into other fields can be placed here',
-        'license': 'CC-BY-4.0; CMIP7 data produced by NOAA-GFDL is licensed under a Creative Commons Attribution 4.0 International License (https://creativecommons.org/licenses/by/4.0). Consult https://wcrp-cmip.github.io/cmip7-guidance/docs/CMIP7/Guidance_for_users/#2-terms-of-use-and-citations-requirements for terms of use governing CMIP7 output, including citation requirements and proper acknowledgment. The data producers and data providers make no warranty, either express or implied, including, but not limited to, warranties of merchantability and fitness for a particular purpose. All liabilities arising from the supply of the information (including any liability arising in negligence) are excluded to the fullest extent permitted by law.', # pylint: disable=line-too-long
+        'license': (
+            'CC-BY-4.0; CMIP7 data produced by NOAA-GFDL is licensed under a Creative Commons '
+            'Attribution 4.0 International License (https://creativecommons.org/licenses/by/4.0). '
+            'Consult https://wcrp-cmip.github.io/cmip7-guidance/docs/CMIP7/Guidance_for_users/'
+            '#2-terms-of-use-and-citations-requirements for terms of use governing CMIP7 output, '
+            'including citation requirements and proper acknowledgment. The data producers and '
+            'data providers make no warranty, either express or implied, including, but not '
+            'limited to, warranties of merchantability and fitness for a particular purpose. All '
+            'liabilities arising from the supply of the information (including any liability '
+            'arising in negligence) are excluded to the fullest extent permitted by law.'
+        ),
         'references': '',
         'drs_specs': 'MIP-DRS7',
         'archive_id': 'WCRP',
@@ -219,7 +252,10 @@ def _cmip7_exp_config_template():
         'parent_mip_era': 'CMIP7',
         'parent_activity_id': 'CMIP',
         'institution_id': 'NOAA-GFDL',
-        'source': 'GFDL-ESM4p5: aerosol: gfdl-am4p5-aerosol; atmosphere: gfdl-am4p5; land-surface: gfdl-lm4p5; ocean-biogeochemistry: cobaltv3p1; ocean: gfdl-om4p5; sea-ice: sis2', # pylint disable=line-too-long
+        'source': (
+            'GFDL-ESM4p5: aerosol: gfdl-am4p5-aerosol; atmosphere: gfdl-am4p5; land-surface: '
+            'gfdl-lm4p5; ocean-biogeochemistry: cobaltv3p1; ocean: gfdl-om4p5; sea-ice: sis2'
+        ),
         'source_id': 'GFDL-ESM4p5',
         'source_type': '',
         'experiment_id': '',
@@ -275,18 +311,23 @@ def _fetch_tables_git(repo_url, tables_dir, tag=None):
     repo_url : str
         HTTPS URL of the MIP table repository.
     tables_dir : str
-        Local directory to clone into.
+        Parent directory under which the repository checkout is created.
     tag : str or None
         Optional git tag / branch to check out.
     """
+    ref = tag if tag else 'main'
+    repo_name = repo_url.rstrip('/').rsplit('/', maxsplit=1)[-1]
+    repo_path = Path(tables_dir) / f'{repo_name}-{ref}'
+    repo_path.parent.mkdir(parents=True, exist_ok=True)
+
     cmd = ['git', 'clone', '--depth', '1']
     if tag:
         cmd += ['--branch', tag]
-    cmd += [repo_url, tables_dir]
+    cmd += [repo_url, str(repo_path)]
 
     fre_logger.info('fetching MIP tables via git: %s', ' '.join(cmd))
     subprocess.run(cmd, check=True)
-    fre_logger.info('MIP tables cloned to %s', tables_dir)
+    fre_logger.info('MIP tables cloned to %s', repo_path)
 
 
 def _fetch_tables_curl(repo_url, tables_dir, tag=None):
@@ -349,7 +390,7 @@ def _fetch_cmip6plus_cv(tables_dir):
     """
     tables_path = Path(tables_dir)
 
-    # `git clone` puts Tables/ at the top; the --fast tarball nests it one level down
+    # Support both repository-root and legacy direct-table layouts.
     candidate_dirs = [tables_path / 'Tables'] + sorted(tables_path.glob('*/Tables'))
     target_dirs = [candidate for candidate in candidate_dirs if candidate.is_dir()]
     if not target_dirs:
@@ -458,7 +499,7 @@ def cmor_init_subtool(
         When *None* and *tables_dir* is also *None*, a default path
         ``CMOR_<MIP_ERA>_template.json`` in the current directory is used.
     tables_dir : str or None
-        Directory into which MIP tables will be fetched.
+        Parent directory under which the MIP table repository will be fetched.
     tag : str or None
         Optional git tag / release for the MIP tables repository.
     fast : bool

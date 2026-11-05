@@ -3,7 +3,6 @@ largely tests for fremor.cmor_config.cmor_config_subtool error conditions / mess
 '''
 
 import json
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,13 +10,8 @@ import yaml
 
 import pytest
 
-from fremor.cmor_config import cmor_config_subtool, _bronx_to_iso_chunk, _load_config_yaml
-
-@pytest.fixture
-def temp_dir():
-    ''' fixture yielding a temporary directory '''
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
+from fremor.cmor_config import (_bronx_to_iso_chunk, _load_config_yaml, _recall_static_files,
+                                cmor_config_subtool)
 
 
 def test_cmor_config_subtool_noppdir_err(temp_dir): # pylint: disable=redefined-outer-name
@@ -36,6 +30,12 @@ def test_cmor_config_subtool_noppdir_err(temp_dir): # pylint: disable=redefined-
                             output_dir='',
                             varlist_dir='',
         )
+
+
+@pytest.mark.parametrize('static_files', [None, []])
+def test_recall_static_files_without_files_is_noop(static_files):
+    ''' no static paths need no recall attempt '''
+    _recall_static_files(static_files)
 
 
 def test_cmor_config_subtool_notabledir_err(temp_dir): # pylint: disable=redefined-outer-name
@@ -187,6 +187,52 @@ def test_cmor_config_subtool_writes_self_contained_yaml(temp_dir): # pylint: dis
     assert loaded_yaml['cmor']['table_targets'][0]['gridding']['grid_desc'] == 'native grid from exp config'
     assert target_component['chunk'] == 'P5Y'
 
+
+def test_cmor_config_subtool_continues_after_static_varlist_failure(tmp_path, caplog):
+    ''' an unreadable static file warns and does not prevent YAML generation '''
+    pp_dir = tmp_path / 'pp'
+    static_file = pp_dir / 'atmos' / 'atmos.static.nc'
+    static_file.parent.mkdir(parents=True)
+    static_file.write_text('not a NetCDF file', encoding='utf-8')
+
+    tables_dir = tmp_path / 'tables'
+    tables_dir.mkdir()
+    (tables_dir / 'CMIP6_Ofx.json').write_text(
+        json.dumps({'variable_entry': {}}), encoding='utf-8'
+    )
+    exp_config = tmp_path / 'exp.json'
+    exp_config.write_text(json.dumps({
+        'grid': 'native grid from exp config',
+        'nominal_resolution': '100 km',
+    }), encoding='utf-8')
+    output_yaml = tmp_path / 'cmor.yaml'
+    varlist_dir = tmp_path / 'varlists'
+    variable_list = varlist_dir / 'CMIP6_Ofx_atmos_static.list'
+
+    with caplog.at_level('WARNING'):
+        cmor_config_subtool(
+            pp_dir=str(pp_dir),
+            mip_tables_dir=str(tables_dir),
+            mip_era='cmip6',
+            exp_config=str(exp_config),
+            output_yaml=str(output_yaml),
+            output_dir=str(tmp_path / 'out'),
+            varlist_dir=str(varlist_dir),
+            freq='static',
+            dmget_bin=str(tmp_path / 'missing-dmget'),
+        )
+
+    assert any(
+        record.levelname == 'WARNING'
+        and 'variable list creation failed for' in record.getMessage()
+        and str(static_file) in record.getMessage()
+        for record in caplog.records
+    )
+    assert output_yaml.is_file()
+    assert yaml.safe_load(output_yaml.read_text(encoding='utf-8'))['cmor']['table_targets'] is None
+    assert not variable_list.exists()
+
+
 def test_cmor_config_subtool_err_no_ppcompdirs(temp_dir): # pylint: disable=redefined-outer-name
     ''' generated config yaml should be directly loadable without unresolved aliases '''
     temp_root = Path(temp_dir)
@@ -264,5 +310,5 @@ def test_load_config_yaml_rejects_yaml_without_cmor_section(temp_dir): # pylint:
     bad_yaml = Path(temp_dir) / 'bad.yaml'
     bad_yaml.write_text(yaml.safe_dump({'not_cmor': {}}), encoding='utf-8')
 
-    with pytest.raises(ValueError, match="expected a top-level mapping"):
+    with pytest.raises(ValueError, match='expected a top-level mapping'):
         _load_config_yaml(str(bad_yaml))

@@ -284,7 +284,7 @@ def detect_input_frequency(nc_file: str, var_name: str) -> Dict[str, Optional[st
             spacing = _time_spacing_days(ds, time_var)
             base = _base_freq_from_spacing(spacing) if spacing is not None else None
             return {'base': base, 'sampling': sampling}
-    except Exception as exc: # pylint: disable=broad-exception-caught
+    except Exception as exc:
         fre_logger.warning('could not read the time axis of %s in %s, not checking its frequency: %s',
                            var_name, nc_file, exc)
         return unknown
@@ -361,8 +361,10 @@ def _read_mip_variable_entries(json_mip_table: str) -> dict:
         fre_logger.debug('attempting to read in variable entries in specified mip table')
         return get_json_file_data(json_mip_table)['variable_entry']
     except Exception as exc:
-        raise Exception( 'problem opening mip table and getting variable entry data.'
-                        f'exc = {exc}') from exc
+        raise RuntimeError(
+            'problem opening mip table and getting variable entry data.'
+            f'exc = {exc}'
+        ) from exc
 
 
 def _build_and_write_varlist(candidate_var_list: list,
@@ -464,7 +466,7 @@ def make_simple_varlist( dir_targ: str,
     if len(all_nc_files) == 1:
         fre_logger.debug('Warning: Only one file found matching the pattern.')
 
-    fre_logger.debug('Files found matching pattern. Number of files: %d', len(all_nc_files))
+    fre_logger.info('Files found matching pattern. Number of files: %d', len(all_nc_files))
 
     mip_vars, accept_fn = None, None
     if json_mip_table is not None:
@@ -473,7 +475,7 @@ def make_simple_varlist( dir_targ: str,
 
         fre_logger.debug('attempting to make mip variable list')
         mip_vars=[ key.split('_')[0] for key in full_mip_vars_list ]
-        fre_logger.info('mip vars extracted for comparison when making var list: %s', mip_vars)
+        fre_logger.ddebug('mip vars extracted for comparison when making var list: %s', mip_vars)
 
         if check_freq:
             # called as accept_fn(var_name, mip_var)
@@ -486,7 +488,7 @@ def make_simple_varlist( dir_targ: str,
         var_name=os.path.basename(targetfile).split('.')[-2]
         if var_name not in candidate_var_list:
             candidate_var_list.append(var_name)
-    fre_logger.info('candidate vars extracted for comparison when making var list: %s', candidate_var_list)
+    fre_logger.ddebug('candidate vars extracted for comparison when making var list: %s', candidate_var_list)
 
     return _build_and_write_varlist(candidate_var_list, output_variable_list,
                                     return_none_if_no_mip_vars, mip_vars, accept_fn)
